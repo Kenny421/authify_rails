@@ -2,6 +2,14 @@
 
 ## 0.4.0 - Unreleased
 
+- Added observe/enforce adaptive authentication protection with shared database
+  counters, keyed identifiers, spraying/distributed attack detection, trusted-browser
+  evidence, bounded pair cooldowns, and a source resource budget.
+- Added opt-in server-verified Turnstile and custom challenge adapters, protected
+  registration/reset/resend requests, and cross-IP MFA challenge attempt budgets.
+- Added adaptive upgrade migrations, monitoring notifications, cleanup tasks,
+  parameter redaction and false-positive/concurrency regression tests.
+
 - Added previewable template-aware upgrades, versioned baselines, conflict proposals,
   repeat-run protection and validation history while preserving application-owned files.
 - Added non-destructive existing-user schema preparation and guarded compatibility migrations.

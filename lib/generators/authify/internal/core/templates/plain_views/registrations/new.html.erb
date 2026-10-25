@@ -1,6 +1,7 @@
 <div>
   <h1>Create account</h1>
   <%= form_with model: @user, url: registration_path do |form| %>
+    <%= render "authify/bot_challenge" %>
     <% if @user.errors.any? %><div><%= @user.errors.full_messages.to_sentence %></div><% end %>
     <div><%= form.label :email %><%= form.email_field :email, required: true, autocomplete: "email" %></div>
     <div><%= form.label :password %><%= form.password_field :password, required: true, autocomplete: "new-password" %></div>

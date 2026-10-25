@@ -33,6 +33,22 @@ namespace :authify do
       checks["TOTP replay protection column exists"] = AuthifyTwoFactorCredential.column_names.include?("last_accepted_at")
     end
 
+    checks["Adaptive thresholds are valid"] = begin
+      Authify.configuration.validate_abuse!
+    rescue ArgumentError
+      false
+    end
+    checks["Adaptive protection mode is valid"] = %i[off observe enforce].include?(Authify.configuration.abuse_mode.to_sym)
+    if Authify.configuration.abuse_mode.to_sym != :off
+      checks["Shared abuse counter table exists"] = defined?(AuthifyAbuseBucket) && AuthifyAbuseBucket.table_exists?
+    end
+    if Authify.configuration.abuse_mode.to_sym == :enforce
+      checks["Bot challenge verifier is configured"] = Authify.configuration.bot_challenge_verifier.respond_to?(:call)
+      verifier = Authify.configuration.bot_challenge_verifier
+      checks["Bot challenge provider has configuration"] = !verifier.respond_to?(:configured?) || verifier.configured?
+      checks["Bot challenge form is configured"] = Authify.configuration.bot_challenge_partial.present?
+    end
+
     if manifest.feature?(:api)
       checks["API token model is available"] = defined?(AuthifyApiToken) && AuthifyApiToken.table_exists?
       checks["API authentication concern is available"] = defined?(Authify::ApiAuthentication).present?
@@ -65,6 +81,11 @@ namespace :authify do
     abort "Authify doctor found problems." unless checks.values.all?
     manifest.verify_upgrade!
     puts "Doctor checks passed. Run your application's tests before deployment."
+  end
+
+  desc "Delete expired adaptive protection counters and trusted device records"
+  task prune_abuse: :environment do
+    puts "Deleted #{AuthifyAbuseBucket.where("expires_at < ?", Time.current).delete_all} expired abuse records."
   end
 
   desc "Delete expired passkey challenges (schedule periodically)"

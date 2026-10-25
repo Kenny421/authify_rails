@@ -1,0 +1,15 @@
+# Observe first, inspect authify.abuse_decision notifications, then explicitly enforce.
+# Counter state is shared in the application DB; no Redis dependency is required.
+Authify.configure do |config|
+  config.abuse_mode = ENV.fetch("AUTHIFY_ABUSE_MODE", "observe").to_sym
+  if ENV["AUTHIFY_TURNSTILE_SITE_KEY"].present? && ENV["AUTHIFY_TURNSTILE_SECRET_KEY"].present?
+    config.turnstile_site_key = ENV["AUTHIFY_TURNSTILE_SITE_KEY"]
+    config.bot_challenge_partial = "authify/turnstile"
+    config.bot_challenge_verifier = Authify::TurnstileVerifier.new(
+      secret: ENV["AUTHIFY_TURNSTILE_SECRET_KEY"],
+      hostnames: ENV.fetch("AUTHIFY_TURNSTILE_HOSTNAMES", "").split(",")
+    )
+  end
+end
+
+Rails.application.config.filter_parameters |= %i[authify_challenge_token password password_confirmation code token]

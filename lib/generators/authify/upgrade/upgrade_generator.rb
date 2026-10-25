@@ -41,6 +41,8 @@ module Authify
         plan.apply!
         migration_path = Dir[File.join(destination_root, "db/migrate/*_upgrade_authify_040_security_fields.rb")].first
         migration_template "compatibility_migration.rb.tt", "db/migrate/upgrade_authify_040_security_fields.rb" unless migration_path
+        abuse_migration = Dir[File.join(destination_root, "db/migrate/*_add_authify_abuse_protection.rb")].first
+        migration_template "abuse_migration.rb.tt", "db/migrate/add_authify_abuse_protection.rb" unless abuse_migration
         manifest.record_upgrade!(files: candidates) unless manifest.version == Authify::VERSION && manifest.baselines == candidates
         say "Review git diff, run bin/rails db:migrate, bin/rails authify:doctor and your application tests before deployment."
       end

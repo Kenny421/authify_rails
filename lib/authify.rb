@@ -10,6 +10,8 @@ require_relative "authify/token"
 require_relative "authify/password_breach_checker"
 require_relative "authify/installation_manifest"
 require_relative "authify/tenant"
+require_relative "authify/abuse_protection"
+require_relative "authify/turnstile_verifier"
 
 module Authify
   class Error < StandardError; end

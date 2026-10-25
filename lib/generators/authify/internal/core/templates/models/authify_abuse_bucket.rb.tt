@@ -1,0 +1,46 @@
+class AuthifyAbuseBucket < ApplicationRecord
+  # Minute buckets bound row growth. Atomic upsert/increment works across workers.
+  def self.bump!(kind:, action:, source:, account:, now:, lifetime:)
+    minute = Time.at(now.to_i / 60 * 60).utc
+    identity = { kind: kind, action: action, source_digest: source, account_digest: account, window_started_at: minute }
+    transaction(requires_new: true) do
+      row = create_or_find_by!(identity) do |record|
+        record.count = 0
+        record.expires_at = minute + lifetime + 60
+      end
+      # Atomic SQL arithmetic also avoids lost updates on SQLite.
+      where(id: row.id).update_all(["count = count + 1, updated_at = ?", now])
+    end
+  end
+
+  def self.source_requests(action:, source:, now:, window:)
+    where(kind: "source_request", action: action, source_digest: source).where("window_started_at >= ? AND expires_at > ?", Time.at((now - window).to_i / 60 * 60).utc, now).sum(:count)
+  end
+
+  def self.snapshot(action:, source:, account:, now:, window:)
+    scope = where(action: action).where("window_started_at >= ? AND expires_at > ?", Time.at((now - window).to_i / 60 * 60).utc, now)
+    failures = scope.where(kind: "failure")
+    pair = failures.where(source_digest: source, account_digest: account)
+    {
+      requests: scope.where(kind: "request", source_digest: source).sum(:count),
+      account_requests: scope.where(kind: "request", account_digest: account).sum(:count),
+      source_failures: failures.where(source_digest: source).sum(:count),
+      account_failures: failures.where(account_digest: account).sum(:count),
+      pair_failures: pair.sum(:count),
+      last_failure_at: pair.maximum(:updated_at),
+      distinct_accounts: failures.where(source_digest: source).distinct.count(:account_digest)
+    }
+  end
+
+  def self.trust!(key, account:, expires_at:)
+    upsert({ kind: "trusted", action: "sign_in", source_digest: key, account_digest: account, window_started_at: Time.at(0).utc, count: 1, expires_at: expires_at }, unique_by: :index_authify_abuse_identity)
+  end
+
+  def self.forget_devices!(account)
+    where(kind: "trusted", account_digest: account).delete_all
+  end
+
+  def self.trusted?(key, now:)
+    where(kind: "trusted", source_digest: key).where("expires_at > ?", now).exists?
+  end
+end

@@ -760,3 +760,119 @@ conversion migration. Custom global unique indexes may also need manual conversi
 Rollback to global indexes can fail once tenants share an email address, so there
 is no automatic destructive rollback. A later security upgrade preserves named
 tenant email indexes instead of reintroducing global constraints.
+
+## Adaptive login and bot protection
+
+Adaptive protection uses shared database counters for password sign-in, registration,
+password-reset requests and verification-email resends. It detects repeated
+source/account failures, distributed failures against an account, and password
+spraying across accounts. It does not identify humans with certainty or replace
+edge-level DDoS protection.
+
+The default is **observation mode**. Existing rate limits and account lockouts remain
+in effect while `authify.abuse_decision` notifications report the projected decision.
+No third-party challenge script is loaded unless a challenge is needed and a provider
+has been configured.
+
+To upgrade existing generated files and add the counter table:
+
+```bash
+bin/rails generate authify:upgrade --dry-run
+bin/rails generate authify:upgrade
+# Review the diff and additive migration first.
+bin/rails db:migrate
+bin/rails authify:doctor
+bin/rails test
+```
+
+### Configure a verified bot challenge
+
+The generated `config/initializers/authify_abuse.rb` supports Cloudflare Turnstile:
+
+```text
+AUTHIFY_ABUSE_MODE=observe
+AUTHIFY_TURNSTILE_SITE_KEY=your_public_widget_site_key
+AUTHIFY_TURNSTILE_SECRET_KEY=your_server_secret
+AUTHIFY_TURNSTILE_HOSTNAMES=app.example.com
+```
+
+Register the same hostnames in your Turnstile widget. Allow
+`https://challenges.cloudflare.com` in the application's CSP script/frame rules,
+and allow the Rails backend to reach Cloudflare's Siteverify endpoint. Keep the
+secret server-side. The adapter checks success, exact request hostname against a
+configured allowlist, and the expected action. Cloudflare validates expiration and
+single use; failed, duplicate, invalid, mismatched and unavailable responses do not
+approve a login. See [Cloudflare's validation documentation](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/).
+
+For a custom provider, configure `bot_challenge_partial` and a
+`bot_challenge_verifier` callable accepting `token:`, `request:` and `action:`.
+The partial must submit `authify_challenge_token` inside the existing form. The
+verifier must perform server-side, single-use validation and return exactly `true`
+only after validating the expected action and deployment origin. Browser-supplied
+success flags are never accepted.
+
+### Enable enforcement after observing real traffic
+
+Set `AUTHIFY_ABUSE_MODE=enforce` after testing the challenge and recovery paths in
+staging. `authify:doctor` checks that the shared counter table and challenge setup
+exist. A correctly configured provider and real-device/browser tests are still
+required; configuration checks cannot certify a provider's availability.
+
+In enforcement mode:
+
+- Occasional password mistakes remain ordinary login failures.
+- Repeated failures introduce challenge/MFA requirements, then a bounded
+  source/account cooldown with `Retry-After`; requests blocked by that cooldown do
+  not keep extending its last-failure time.
+- Automatic new password-failure account-wide locks are replaced with these
+  controls. Pre-existing `locked_until` values are still honored until expiration.
+- Correct passwords still require any enrolled MFA. Under elevated risk, a correct
+  password without MFA needs a verified bot challenge. Passkey sign-in remains a
+  separate cryptographically verified path.
+- A previously verified browser can reduce soft challenges caused by distributed
+  or shared-IP attacks. Its opaque encrypted cookie is never sufficient to sign
+  in and cannot bypass repeated failures against its own source/account pair.
+- Five MFA submissions are allowed per primary-authentication challenge across IP
+  changes. Starting another challenge still requires the primary credential.
+- Successful password changes, resets and email changes invalidate the affected
+  account's trusted-browser evidence. Failed attacks do not revoke existing sessions.
+- The source request hard budget protects application resources and can still
+  restrict shared networks under extreme load. Tune it from observed traffic.
+
+Modes are `off`, `observe` and `enforce`. `off` disables adaptive tracking while
+retaining legacy authentication controls. Invalid mode names and invalid numeric
+settings are rejected. Thresholds are configurable through `Authify.configure`:
+
+```ruby
+config.abuse_window = 10.minutes
+config.abuse_source_request_limit = 300
+config.abuse_source_failure_threshold = 30
+config.abuse_pair_challenge_threshold = 5
+config.abuse_pair_cooldown_threshold = 10
+config.abuse_account_failure_threshold = 10
+config.abuse_spray_threshold = 10
+config.abuse_public_source_challenge_threshold = 5
+config.abuse_account_request_limit = 5
+config.abuse_device_lifetime = 30.days
+```
+
+Configure Rails' trusted proxy list correctly before relying on `request.remote_ip`;
+never treat arbitrary public forwarding headers as authoritative. All workers must
+share the counter database and the same Rails key material. Missing counter storage
+fails closed for enforced password/public attempts; observation retains existing
+controls and emits `authify.abuse_store_error` notifications.
+
+### Monitoring and retention
+
+Subscribe to `authify.abuse_decision`, `authify.bot_challenge` and
+`authify.abuse_store_error` through `ActiveSupport::Notifications`. Monitor challenge
+rates, successful recovery and false positives before changing thresholds. The
+counter table stores keyed hashes of account/source/browser identifiers, not raw
+emails, IPs, passwords or challenge tokens. Account identifiers include tenant
+context. Minute buckets expire shortly after the configured window; trusted-browser
+records expire after the configured lifetime.
+
+Schedule `bin/rails authify:prune_abuse` periodically (for example hourly through
+Solid Queue recurring tasks). There is no Redis requirement. The generated abuse
+initializer adds sensitive challenge/credential fields to Rails parameter filtering.
+Existing application authentication-event retention remains application-owned.

@@ -85,3 +85,20 @@ tenant mode remains disabled until explicitly configured and backfilled.
 
 See README.md for API, passkey and tenant setup. A tenant resolver and membership
 model cannot be inferred safely from an application's existing business logic.
+
+## Adaptive protection follow-up in 0.4.0
+
+Rerun the upgrade preview when updating to the adaptive protection revision. It
+adds the `authify_abuse_buckets` model/table, browser challenge partials and assets,
+an abuse initializer, controller hooks, tests and a separate guarded
+`AddAuthifyAbuseProtection` migration. This works even when the earlier 0.4.0 security
+migration has already been applied. Existing initializers/customizations are
+compared through the same baseline/conflict process.
+
+Observation mode is the default and preserves the existing fixed controls. Enable
+`AUTHIFY_ABUSE_MODE=enforce` only after the migration, challenge-provider configuration,
+doctor checks and staging tests. In enforcement mode new failed passwords no longer
+extend automatic account-wide lockouts; source/account cooldowns and additional
+verification protect the account instead. Existing locks and disabled-account
+checks remain authoritative. Review README.md for thresholds, proxy configuration,
+monitoring, cleanup and the custom challenge-provider contract.

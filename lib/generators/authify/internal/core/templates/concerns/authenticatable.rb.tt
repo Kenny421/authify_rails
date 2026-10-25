@@ -28,7 +28,7 @@ module Authify
       with_lock do
         next_count = failed_login_attempts.to_i + 1
         attrs = { failed_login_attempts: next_count }
-        if next_count >= Authify.configuration.maximum_login_attempts
+        if Authify.configuration.abuse_mode.to_sym != :enforce && next_count >= Authify.configuration.maximum_login_attempts
           attrs[:locked_until] = Authify.configuration.lockout_duration.from_now
         end
         update_columns(**attrs, updated_at: Time.current)

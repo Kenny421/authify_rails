@@ -53,5 +53,7 @@ class CreateAuthifyCore < ActiveRecord::Migration[8.0]
       t.timestamps
     end
     add_index :authentication_events, :event_type
+    require "authify/schema"
+    Authify::Schema.ensure_abuse!(self)
   end
 end

@@ -1,6 +1,7 @@
 module Authify
   class EmailVerificationsController < ApplicationController
     rate_limit to: 5, within: 1.hour, only: :create,
+               unless: -> { Authify.configuration.abuse_mode.to_sym == :enforce },
                with: -> { redirect_to new_email_verification_path, alert: "Too many verification requests. Try again later." }
     rate_limit to: 10, within: 10.minutes, only: :show,
                with: -> { redirect_to new_session_path, alert: "Too many verification attempts. Try again later." }
@@ -8,6 +9,8 @@ module Authify
     def new; end
 
     def create
+      return unless authify_abuse_check(:verification_resend, email: params[:email])
+      return authify_abuse_challenge if @authify_challenge_required
       user = Authify.user_scope.find_by(email: params[:email].to_s.strip.downcase)
       if user && !user.email_verified?
         token = user.issue_email_verification!

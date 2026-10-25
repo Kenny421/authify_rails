@@ -16,15 +16,18 @@ module Authify
     def files
       map = {}
       core = "internal/core/templates"
-      %w[authentication current_session].each { |n| map["app/controllers/concerns/authify/#{n}.rb"] = "#{core}/#{n}.rb.tt" }
+      %w[authentication current_session abuse_guard].each { |n| map["app/controllers/concerns/authify/#{n}.rb"] = "#{core}/#{n}.rb.tt" }
       %w[authenticatable secure_password].each { |n| map["app/models/concerns/authify/#{n}.rb"] = "#{core}/concerns/#{n}.rb.tt" }
-      %w[authify_session authentication_event].each { |n| map["app/models/#{n}.rb"] = "#{core}/models/#{n}.rb.tt" }
+      %w[authify_session authentication_event authify_abuse_bucket].each { |n| map["app/models/#{n}.rb"] = "#{core}/models/#{n}.rb.tt" }
       %w[application sessions two_factor_challenges registrations passwords password_changes email_verifications email_changes account_sessions].each do |n|
         map["app/controllers/authify/#{n}_controller.rb"] = "#{core}/controllers/#{n}_controller.rb.tt"
       end
+      map["config/initializers/authify_abuse.rb"] = "#{core}/authify_abuse.rb.tt"
+      map["app/assets/javascripts/authify_turnstile.js"] = "#{core}/authify_turnstile.js"
       map["app/models/current.rb"] = "#{core}/current.rb.tt"
       map["app/mailers/authify_mailer.rb"] = "#{core}/mailer.rb.tt"
       map["test/mailers/previews/authify_mailer_preview.rb"] = "#{core}/mailer_preview.rb.tt"
+      map["test/integration/authify_abuse_test.rb"] = "#{core}/tests/abuse_test.rb.tt"
       map["test/integration/authify_concurrency_test.rb"] = "#{core}/tests/concurrency_test.rb.tt"
       map["test/integration/authify_hardening_test.rb"] = "#{core}/tests/hardening_test.rb.tt"
       map["test/integration/authify_security_flows_test.rb"] = "#{core}/tests/security_flows_test.rb.tt"

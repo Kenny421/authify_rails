@@ -2,6 +2,7 @@ module Authify
   class TwoFactorChallengesController < ApplicationController
     CHALLENGE_TTL = 5.minutes
     rate_limit to: 10, within: 3.minutes, only: :create,
+               unless: -> { Authify.configuration.abuse_mode.to_sym == :enforce },
                with: -> { redirect_to new_session_path, alert: "Too many verification attempts. Sign in again later." }
 
     before_action :load_pending_challenge
@@ -9,6 +10,13 @@ module Authify
     def new; end
 
     def create
+      if Authify.configuration.abuse_mode.to_sym == :enforce
+        risk = Authify::AbuseProtection.new(source: request.remote_ip, account: @user.email, tenant: Current.authify_tenant_id, action: :factor)
+        unless risk.factor_attempt!(challenge: pending_challenge[:challenge_id] || pending_challenge[:started_at].to_s)
+          clear_pending_challenge
+          return redirect_to new_session_path, alert: "Verification attempts exceeded. Please sign in again."
+        end
+      end
       verification_method = if @credential.verify?(params[:code])
                               "totp"
                             elsif @credential.consume_recovery_code!(params[:code])

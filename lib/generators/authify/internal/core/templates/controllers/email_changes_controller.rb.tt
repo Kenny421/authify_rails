@@ -38,6 +38,7 @@ module Authify
       user.with_lock do
         raise ActiveRecord::RecordInvalid, user unless user.email_change_token_valid?(params[:token])
 
+        Authify::AbuseProtection.new(source: request.remote_ip, account: user.email, tenant: Current.authify_tenant_id).forget_devices!
         user.update!(
           email: user.pending_email,
           email_verified_at: Time.current,

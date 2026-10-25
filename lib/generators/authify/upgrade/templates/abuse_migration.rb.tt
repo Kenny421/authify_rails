@@ -1,0 +1,10 @@
+class AddAuthifyAbuseProtection < ActiveRecord::Migration[8.0]
+  def up
+    require "authify/schema"
+    Authify::Schema.ensure_abuse!(self)
+  end
+
+  def down
+    raise ActiveRecord::IrreversibleMigration, "Disable adaptive protection and review before removing counters."
+  end
+end

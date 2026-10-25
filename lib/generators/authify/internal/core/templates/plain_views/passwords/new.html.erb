@@ -1,1 +1,2 @@
 <div><h1>Reset password</h1><%= form_with url: passwords_path do |f| %><%= f.email_field :email, required: true, autocomplete: "email", placeholder: "Email" %><%= f.submit "Send reset link" %><% end %></div>
+    <%= render "authify/bot_challenge" %>

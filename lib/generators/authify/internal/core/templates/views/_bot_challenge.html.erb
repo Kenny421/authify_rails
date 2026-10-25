@@ -1,0 +1,9 @@
+<% if @authify_challenge_required %>
+  <section aria-label="Additional verification">
+    <% if Authify.configuration.bot_challenge_partial.present? %>
+      <%= render Authify.configuration.bot_challenge_partial %>
+    <% else %>
+      <p>Additional verification is required. You can sign in with a passkey or, if enabled, your password and authenticator. Contact support if you cannot recover access.</p>
+    <% end %>
+  </section>
+<% end %>

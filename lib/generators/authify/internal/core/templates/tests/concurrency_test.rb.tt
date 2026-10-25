@@ -46,4 +46,20 @@ class AuthifyConcurrencyTest < ActionDispatch::IntegrationTest
     assert_equal 8, @user.reload.failed_login_attempts
     assert @user.locked?
   end
+  test "shared abuse counters do not lose increments across workers" do
+    digest = SecureRandom.hex(32)
+    now = Time.current
+    threads = 12.times.map do
+      Thread.new do
+        ActiveRecord::Base.connection_pool.with_connection do
+          AuthifyAbuseBucket.bump!(kind: "request", action: "counter_test", source: digest, account: digest, now: now, lifetime: 10.minutes)
+        end
+      end
+    end
+    threads.each(&:value)
+    assert_equal 12, AuthifyAbuseBucket.where(action: "counter_test", source_digest: digest).sum(:count)
+  ensure
+    AuthifyAbuseBucket.where(action: "counter_test", source_digest: digest).delete_all if digest
+  end
+
 end

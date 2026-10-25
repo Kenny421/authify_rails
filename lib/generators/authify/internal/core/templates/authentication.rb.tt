@@ -4,6 +4,7 @@ module Authify
 
     included do
       include Authify::CurrentSession
+      include Authify::AbuseGuard
       helper_method :current_user, :authenticated?
       before_action :authify_set_tenant
       before_action :authify_resume_session

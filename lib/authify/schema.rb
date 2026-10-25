@@ -38,3 +38,25 @@ module Authify
     end
   end
 end
+
+module Authify
+  module Schema
+    def self.ensure_abuse!(migration)
+      return if migration.table_exists?(:authify_abuse_buckets)
+      migration.create_table :authify_abuse_buckets do |t|
+        t.string :kind, null: false
+        t.string :action, null: false
+        t.string :source_digest, null: false
+        t.string :account_digest, null: false
+        t.datetime :window_started_at, null: false
+        t.bigint :count, null: false, default: 0
+        t.datetime :expires_at, null: false
+        t.timestamps
+      end
+      migration.add_index :authify_abuse_buckets, %i[kind action source_digest account_digest window_started_at], unique: true, name: :index_authify_abuse_identity
+      migration.add_index :authify_abuse_buckets, %i[action source_digest window_started_at], name: :index_authify_abuse_source
+      migration.add_index :authify_abuse_buckets, %i[action account_digest window_started_at], name: :index_authify_abuse_account
+      migration.add_index :authify_abuse_buckets, :expires_at
+    end
+  end
+end

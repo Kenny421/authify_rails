@@ -43,6 +43,12 @@ module Authify
       reset_session
       Current.user = user
       Current.authify_session = record
+      if Authify.configuration.abuse_mode.to_sym != :off
+        device = cookies.encrypted[:authify_device].presence || SecureRandom.urlsafe_base64(32)
+        risk = Authify::AbuseProtection.new(source: request.remote_ip, account: user.email, tenant: Current.authify_tenant_id, action: :sign_in)
+        risk.succeeded!(device: device)
+        cookies.encrypted[:authify_device] = { value: device, httponly: true, secure: Rails.env.production?, same_site: :lax, expires: Authify.configuration.abuse_device_lifetime.from_now }
+      end
     end
 
     def authify_end_session
