@@ -2,6 +2,7 @@ class CreateAuthifyApiTokens < ActiveRecord::Migration[8.0]
   def change
     create_table :authify_api_tokens do |t|
       t.references :user, null: false, foreign_key: { to_table: :<%= options[:user_model].underscore.pluralize %> }
+      t.integer :authify_security_version, null: false, default: 0
       t.string :name, null: false
       t.string :token_prefix, null: false
       t.string :token_digest, null: false

@@ -1,0 +1,25 @@
+<div class="mx-auto max-w-md p-6">
+  <h1 class="text-2xl font-bold">Change email address</h1>
+  <p class="mt-2 text-gray-600">Your current email remains active until the new address is verified.</p>
+
+  <% if @user.errors.any? %>
+    <ul class="mt-4 text-red-700"><% @user.errors.full_messages.each do |message| %><li><%= message %></li><% end %></ul>
+  <% end %>
+
+  <%= form_with model: @user, url: account_email_path, method: :patch, class: "mt-6 space-y-4" do |form| %>
+    <%= form.email_field :email, value: @user.pending_email, required: true, autocomplete: "email", placeholder: "New email address", class: "w-full rounded border p-3" %>
+    <%= password_field_tag :current_password, nil, autocomplete: "current-password", placeholder: "Current password (not needed after recent sudo verification)", class: "w-full rounded border p-3" %>
+    <%= form.submit "Send verification", class: "w-full rounded bg-black p-3 text-white" %>
+  <% end %>
+
+  <% if @user.pending_email.present? %>
+    <div class="mt-8 rounded border p-4">
+      <p>Pending address: <strong><%= @user.pending_email %></strong></p>
+      <p class="mt-1 text-sm text-gray-600">Requested <%= time_ago_in_words(@user.email_change_sent_at) %> ago.</p>
+      <%= form_with url: account_email_path, method: :delete, class: "mt-4 space-y-3" do %>
+        <%= password_field_tag :current_password, nil, autocomplete: "current-password", placeholder: "Current password (not needed after recent sudo verification)", class: "w-full rounded border p-3" %>
+        <%= submit_tag "Cancel email change", class: "rounded border px-4 py-2" %>
+      <% end %>
+    </div>
+  <% end %>
+</div>

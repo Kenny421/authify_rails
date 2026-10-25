@@ -1,0 +1,24 @@
+class CreateAuthifyPasskeys < ActiveRecord::Migration[8.0]
+  def change
+    add_column :<%= options[:user_model].underscore.pluralize %>, :authify_webauthn_id, :string
+    create_table :authify_passkeys do |t|
+      t.references :user, null: false, foreign_key: { to_table: :<%= options[:user_model].underscore.pluralize %> }
+      t.string :credential_id, null: false
+      t.text :public_key, null: false
+      t.bigint :sign_count, null: false, default: 0
+      t.string :name, null: false
+      t.timestamps
+    end
+    add_index :authify_passkeys, :credential_id, unique: true
+    create_table :authify_passkey_challenges do |t|
+      t.string :token_digest, null: false
+      t.string :kind, null: false
+      t.json :data, null: false
+      t.datetime :expires_at, null: false
+      t.datetime :consumed_at
+      t.timestamps
+    end
+    add_index :authify_passkey_challenges, :token_digest, unique: true
+    add_index :authify_passkey_challenges, :expires_at
+  end
+end

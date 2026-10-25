@@ -1,0 +1,9 @@
+class AuthifySignInChallenge < ApplicationRecord
+  belongs_to :user, class_name: Authify.configuration.user_class_name
+
+  def usable_for?(user, credential)
+    consumed_at.nil? && expires_at.future? && attempts < 5 &&
+      user_id == user.id && credential_id == credential.id &&
+      authify_security_version == user.authify_security_version
+  end
+end

@@ -1,0 +1,4 @@
+class AuthifyPasskey < ApplicationRecord
+  belongs_to :user, class_name: Authify.configuration.user_class_name
+  validates :credential_id, :public_key, :name, presence: true
+end

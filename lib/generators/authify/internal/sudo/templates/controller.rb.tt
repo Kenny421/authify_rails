@@ -1,62 +1,27 @@
 module Authify
   class SudoController < ApplicationController
-    MAX_SUDO_ATTEMPTS = 5
-    SUDO_LOCKOUT_DURATION = 10.minutes
-
     require_authentication
-    before_action :block_if_sudo_locked, only: :create
+    rate_limit to: 10, within: 5.minutes, only: :create, with: -> { head :too_many_requests }
 
     def new; end
 
     def create
-      if current_user.authenticate(params[:password])
-        clear_sudo_failures!
-        Current.authify_session.update!(
-          sudoed_at: Time.current,
+      return_to = session[:authify_sudo_return_to]
+      if authify_sensitive_authentication(password: params[:password], allow_recent: false)
+        Current.authify_session.update!(sudoed_at: Time.current,
           sudo_expires_at: Authify.configuration.sudo_timeout.from_now,
-          sudo_method: "password"
-        )
+          sudo_method: Current.authify_session.reauthentication_method)
         current_user.authentication_events.create!(event_type: "sudo_entered", ip_address: request.remote_ip, user_agent: request.user_agent)
-        redirect_to session.delete(:authify_sudo_return_to) || root_path
+        redirect_to authify_local_path(return_to, root_path)
       else
-        increment_sudo_failures!
         current_user.authentication_events.create!(event_type: "sudo_failed", ip_address: request.remote_ip, user_agent: request.user_agent)
-        redirect_to new_sudo_path, alert: "Password was incorrect."
+        redirect_to new_sudo_path, alert: "Password or verification code was incorrect, or too many attempts."
       end
     end
 
     def destroy
-      Current.authify_session&.update!(sudoed_at: nil, sudo_expires_at: nil, sudo_method: nil)
-      redirect_back fallback_location: root_path, notice: "Identity confirmation cleared."
-    end
-
-    private
-
-    def block_if_sudo_locked
-      return unless sudo_locked_out?
-
-      current_user.authentication_events.create!(event_type: "sudo_locked", ip_address: request.remote_ip, user_agent: request.user_agent)
-      redirect_to new_sudo_path, alert: "Too many attempts. Try again later."
-    end
-
-    def sudo_locked_out?
-      locked_until = session[:authify_sudo_locked_until]
-      locked_until.present? && Time.current < Time.zone.parse(locked_until)
-    rescue ArgumentError, TypeError
-      false
-    end
-
-    def increment_sudo_failures!
-      failures = session[:authify_sudo_failures].to_i + 1
-      session[:authify_sudo_failures] = failures
-      if failures >= MAX_SUDO_ATTEMPTS
-        session[:authify_sudo_locked_until] = SUDO_LOCKOUT_DURATION.from_now.iso8601
-      end
-    end
-
-    def clear_sudo_failures!
-      session.delete(:authify_sudo_failures)
-      session.delete(:authify_sudo_locked_until)
+      Current.authify_session&.update!(sudoed_at: nil, sudo_expires_at: nil, sudo_method: nil, reauthenticated_at: nil, reauthentication_method: nil)
+      redirect_to root_path, notice: "Identity confirmation cleared."
     end
   end
 end

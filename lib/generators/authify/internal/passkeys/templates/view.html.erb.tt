@@ -1,0 +1,16 @@
+<h1>Passkeys</h1>
+<p>Confirm your identity before adding or removing passkeys.</p>
+<label for="authify-current-password">Current password</label>
+<input type="password" id="authify-current-password" autocomplete="current-password">
+<label for="authify-current-code">Authenticator or recovery code (if enabled)</label>
+<input id="authify-current-code" autocomplete="one-time-code">
+<button type="button" id="authify-confirm-passkey">Confirm with an existing passkey</button>
+<button type="button" id="authify-confirm-password">Confirm with password</button>
+<ul>
+<%% current_user.authify_passkeys.each do |passkey| %>
+  <li><%%= passkey.name %> <%%= button_to "Remove", passkey_path(passkey), method: :delete %></li>
+<%% end %>
+</ul>
+<button type="button" id="authify-register-passkey">Add a passkey</button>
+<p id="authify-passkey-status" role="status"></p>
+<%%= javascript_include_tag "authify_passkeys", defer: true %>

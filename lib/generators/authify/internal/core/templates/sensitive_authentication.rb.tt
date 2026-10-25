@@ -1,0 +1,75 @@
+module Authify
+  module SensitiveAuthentication
+    private
+
+    def authify_local_path(value, fallback = "/")
+      path = value.to_s
+      return path if path.start_with?("/") && !path.start_with?("//") && !path.match?(/[\\\x00-\x20\x7f]/)
+      fallback == "/" ? "/" : authify_local_path(fallback)
+    end
+
+    def authify_reject_stale_authentication
+      authify_end_session
+      redirect_to new_session_path, alert: "Your credentials changed. Please sign in again."
+    end
+
+    # Called under the user lock for sensitive mutations. Reload revocation and
+    # expiry state after acquiring that lock, not just in the request before-action.
+    def authify_current_session_valid?
+      record = Current.authify_session
+      record && record.reload.active? && record.user_id == current_user.id &&
+        record.authify_security_version == current_user.authify_security_version && Authify.user_in_current_tenant?(current_user)
+    end
+
+    def authify_recent_proof?
+      record = Current.authify_session
+      record && record.active? && record.reauthenticated_at && record.reauthenticated_at >= Authify.configuration.sudo_timeout.ago
+    end
+
+    def authify_sensitive_authentication(password: params[:current_password], code: params[:code], allow_recent: true)
+      verified = false
+      current_user.with_lock do
+        raise Authify::StaleAuthentication unless authify_current_session_valid?
+        return true if allow_recent && authify_recent_proof?
+        risk = Authify::AbuseProtection.new(source: request.remote_ip, account: current_user.email, tenant: Current.authify_tenant_id, action: :reauthenticate)
+        return false unless risk.sensitive_attempt!
+        credential = current_user.respond_to?(:authify_two_factor_credential) && current_user.authify_two_factor_credential
+        enabled = credential && credential.confirmed_at && credential.disabled_at.nil?
+        verified = current_user.authenticate(password).present?
+        verified &&= credential.verify?(code) || credential.consume_recovery_code!(code) if enabled
+        authify_rotate_proven_session!(enabled ? "password+factor" : "password") if verified
+      end
+      verified
+    end
+
+    def authify_rotate_proven_session!(method)
+      old = Current.authify_session
+      user = current_user
+      # Rotate both cookies: an older stolen session cannot inherit this proof.
+      authify_start_session(user, remember: old.remembered?, authentication_method: method)
+      old.revoke!
+      record = Current.authify_session
+      proof = { reauthenticated_at: Time.current, reauthentication_method: method }
+      if record.has_attribute?(:sudo_expires_at)
+        proof.merge!(sudoed_at: Time.current, sudo_expires_at: Authify.configuration.sudo_timeout.from_now, sudo_method: method)
+      end
+      record.update!(proof)
+    end
+
+    def authify_begin_factor_challenge(user, credential, remember:, authentication_method:)
+      raw, digest = Authify::Token.generate
+      expected_version = user.authify_security_version
+      user.with_lock do
+        raise Authify::StaleAuthentication unless user.authify_security_version == expected_version && Authify.user_in_current_tenant?(user)
+        risk = Authify::AbuseProtection.new(source: request.remote_ip, account: user.email, tenant: Current.authify_tenant_id)
+        raise Authify::StaleAuthentication unless risk.factor_challenge_allowed?
+        credential.reload
+        raise Authify::StaleAuthentication unless credential.confirmed_at && credential.disabled_at.nil?
+        AuthifySignInChallenge.create!(user: user, token_digest: digest, credential_id: credential.id,
+          authify_security_version: user.authify_security_version, expires_at: 5.minutes.from_now)
+      end
+      session[:authify_pending_two_factor] = { user_id: user.id, remember: remember,
+        authentication_method: authentication_method, challenge_id: raw, started_at: Time.current.to_i }
+    end
+  end
+end

@@ -1,0 +1,33 @@
+module Authify
+  module ApiAuthentication
+    extend ActiveSupport::Concern
+
+    included do
+      before_action :authify_authenticate_api_token
+      rescue_from Authify::MissingTenant, with: -> { head :forbidden }
+    end
+
+    class_methods do
+      def require_api_scope(*scopes)
+        before_action do
+          token = Current.authify_api_token
+          head :forbidden unless token && (scopes.map(&:to_s) - token.scopes).empty?
+        end
+      end
+    end
+
+    private
+
+    def authify_authenticate_api_token
+      Current.reset
+      Current.authify_tenant_id = Authify.resolve_tenant(request)
+      scheme, bearer = request.authorization.to_s.split(" ", 2)
+      token = AuthifyApiToken.authenticate(bearer) if scheme&.casecmp?("Bearer")
+      return head :unauthorized unless token
+
+      Current.user = token.user
+      Current.authify_api_token = token
+      token.update_column(:last_used_at, Time.current) if token.last_used_at.nil? || token.last_used_at < 5.minutes.ago
+    end
+  end
+end

@@ -4,6 +4,7 @@ class CreateAuthifyTwoFactorCredentials < ActiveRecord::Migration[8.0]
       t.references :user, null: false, foreign_key: { to_table: :<%= options[:user_model].underscore.pluralize %> }, index: { unique: true }
       t.text :secret_ciphertext, null: false
       t.json :recovery_code_digests, null: false, default: []
+      t.bigint :last_accepted_at
       t.datetime :confirmed_at
       t.datetime :disabled_at
       t.timestamps

@@ -1,0 +1,197 @@
+require "test_helper"
+
+class AuthifyConcurrencyTest < ActionDispatch::IntegrationTest
+  self.use_transactional_tests = false
+
+  setup do
+    skip "Row-lock concurrency coverage runs on PostgreSQL" unless ActiveRecord::Base.connection.adapter_name == "PostgreSQL"
+    Authify.configuration.pwned_password_check = false
+    Authify.configuration.email_notifications_enabled = false
+    Authify.configuration.tenant_enabled = false
+    @user = Authify.configuration.user_class.create!(email: "concurrent-#{SecureRandom.hex(5)}@example.com", password: "correct-password-123", email_verified_at: Time.current)
+  end
+
+  teardown do
+    @user&.destroy!
+  end
+
+  test "two requests cannot consume one password reset token" do
+    token = @user.issue_password_reset!
+    ready, start = Queue.new, Queue.new
+    threads = 2.times.map do |index|
+      Thread.new do
+        ready << true
+        start.pop
+        client = ActionDispatch::Integration::Session.new(Rails.application)
+        client.patch "/reset-password/#{token}", params: { user: { password: "replacement-password-#{index}", password_confirmation: "replacement-password-#{index}" } }
+        URI.parse(client.response.location).path
+      end
+    end
+    2.times { ready.pop }
+    2.times { start << true }
+    assert_equal ["/forgot-password", "/sign-in"], threads.map(&:value).sort
+    assert_nil @user.reload.password_reset_token_digest
+  end
+
+  test "simultaneous failed attempts all count toward account lockout" do
+    id = @user.id
+    threads = 8.times.map do
+      Thread.new do
+        ActiveRecord::Base.connection_pool.with_connection do
+          Authify.configuration.user_class.find(id).record_failed_login!
+        end
+      end
+    end
+    threads.each(&:value)
+    assert_equal 8, @user.reload.failed_login_attempts
+    assert @user.locked?
+  end
+  test "shared abuse counters do not lose increments across workers" do
+    digest = SecureRandom.hex(32)
+    now = Time.current
+    threads = 12.times.map do
+      Thread.new do
+        ActiveRecord::Base.connection_pool.with_connection do
+          AuthifyAbuseBucket.bump!(kind: "request", action: "counter_test", source: digest, account: digest, now: now, lifetime: 10.minutes)
+        end
+      end
+    end
+    threads.each(&:value)
+    assert_equal 12, AuthifyAbuseBucket.where(action: "counter_test", source_digest: digest).sum(:count)
+  ensure
+    AuthifyAbuseBucket.where(action: "counter_test", source_digest: digest).delete_all if digest
+  end
+
+  test "an already verified old password cannot open a session after reset" do
+    user_class = Authify.configuration.user_class
+    barrier = Module.new do
+      def authenticate(password)
+        result = super
+        if (queues = Thread.current[:authify_password_barrier])
+          queues.first << true
+          queues.last.pop
+        end
+        result
+      end
+    end
+    user_class.prepend(barrier)
+    ready, release = Queue.new, Queue.new
+    token = @user.issue_password_reset!
+    login = Thread.new do
+      Thread.current[:authify_password_barrier] = [ready, release]
+      client = ActionDispatch::Integration::Session.new(Rails.application)
+      client.post "/sign-in", params: { email: @user.email, password: "correct-password-123" }
+      client.response.status
+    ensure
+      Thread.current[:authify_password_barrier] = nil
+    end
+    require "timeout"
+    Timeout.timeout(15) { ready.pop }
+    patch password_path(token), params: { user: { password: "replacement-password-456", password_confirmation: "replacement-password-456" } }
+    assert_redirected_to new_session_path
+    release << true
+    assert_equal 302, login.value
+    assert_empty @user.authify_sessions
+  ensure
+    release << true if release
+    login&.join(5)
+  end
+
+  test "account factor budget grants no more than its limit under contention" do
+    key = SecureRandom.hex(32)
+    now = Time.current
+    results = 16.times.map do
+      Thread.new do
+        ActiveRecord::Base.connection_pool.with_connection do
+          AuthifyAbuseBucket.consume_budget!(kind: "factor_account", key: key, now: now, limit: 10, window: 5.minutes)
+        end
+      end
+    end.map(&:value)
+    assert_equal 10, results.count(true)
+    assert_equal 10, AuthifyAbuseBucket.where(kind: "factor_account", source_digest: key).sum(:count)
+  ensure
+    AuthifyAbuseBucket.where(kind: "factor_account", source_digest: key).delete_all if key
+  end
+
+end
+
+class AuthifyConcurrencyTest
+  test "a tenant transfer between password verification and session creation is rejected" do
+    skip "Tenant schema not installed" unless @user.has_attribute?(:tenant_id)
+    @user.update_column(:tenant_id, 10)
+    Authify.configuration.tenant_enabled = true
+    Authify.configuration.tenant_resolver = ->(_request) { 10 }
+    barrier = Module.new do
+      def authenticate(password)
+        result = super
+        if (queues = Thread.current[:authify_tenant_barrier])
+          queues.first << true
+          queues.last.pop
+        end
+        result
+      end
+    end
+    Authify.configuration.user_class.prepend(barrier)
+    ready, release = Queue.new, Queue.new
+    login = Thread.new do
+      Thread.current[:authify_tenant_barrier] = [ready, release]
+      client = ActionDispatch::Integration::Session.new(Rails.application)
+      client.post "/sign-in", params: { email: @user.email, password: "correct-password-123" }
+      client.response.status
+    ensure
+      Thread.current[:authify_tenant_barrier] = nil
+    end
+    require "timeout"
+    Timeout.timeout(15) { ready.pop }
+    # Also protect against external tenant moves that bypass model callbacks.
+    @user.update_column(:tenant_id, 20)
+    release << true
+    assert_equal 302, login.value
+    assert_empty @user.authify_sessions
+  ensure
+    release << true if release
+    login&.join(5)
+    Authify.configuration.tenant_enabled = false
+  end
+
+  test "revoking a session during passkey enrollment prevents registration" do
+    skip "Passkeys not installed" unless defined?(AuthifyPasskey)
+    require "webauthn/fake_client"
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    post registration_options_passkeys_path, params: { current_password: "correct-password-123" }, as: :json
+    assert_response :success
+    existing_session = @user.authify_sessions.last
+    credential = WebAuthn::FakeClient.new("http://localhost:3000").create(challenge: response.parsed_body.fetch("challenge"), user_verified: true)
+    captured = cookies.instance_variable_get(:@cookies).to_h { |cookie| [cookie.name, cookie.value] }
+    barrier = Module.new do
+      def verify(...)
+        result = super
+        if (queues = Thread.current[:authify_enrollment_barrier])
+          queues.first << true
+          queues.last.pop
+        end
+        result
+      end
+    end
+    WebAuthn::PublicKeyCredentialWithAttestation.prepend(barrier)
+    ready, release = Queue.new, Queue.new
+    registration = Thread.new do
+      Thread.current[:authify_enrollment_barrier] = [ready, release]
+      client = ActionDispatch::Integration::Session.new(Rails.application)
+      captured.each { |key, value| client.cookies[key] = value }
+      client.post "/passkeys", params: { credential: credential }, as: :json
+      client.response.status
+    ensure
+      Thread.current[:authify_enrollment_barrier] = nil
+    end
+    require "timeout"
+    Timeout.timeout(15) { ready.pop }
+    existing_session.revoke!
+    release << true
+    assert_equal 422, registration.value
+    assert_empty @user.authify_passkeys
+  ensure
+    release << true if release
+    registration&.join(5)
+  end
+end

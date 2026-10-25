@@ -1,0 +1,5 @@
+Your account is ready
+
+Thanks for confirming your email address. Your <%%= @app_name %> account is ready.
+
+Continue: <%%= @action_url %>

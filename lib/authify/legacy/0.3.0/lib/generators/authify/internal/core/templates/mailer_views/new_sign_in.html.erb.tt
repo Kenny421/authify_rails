@@ -1,0 +1,10 @@
+<%% content_for :preheader, "A new sign-in was detected on your account." %>
+<h1 style="margin:0 0 16px;font-size:26px;line-height:1.25;">New sign-in detected</h1>
+<p style="margin:0 0 18px;color:#374151;line-height:1.7;">A new sign-in to your <strong><%%= @app_name %></strong> account was detected.</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:0 0 22px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;">
+<tr><td style="padding:10px 14px;color:#6b7280;width:110px;">Time</td><td style="padding:10px 14px;color:#111827;"><%%= @signed_in_at.to_fs(:long) %></td></tr>
+<tr><td style="padding:10px 14px;color:#6b7280;">IP address</td><td style="padding:10px 14px;color:#111827;"><%%= @ip_address.presence || "Unavailable" %></td></tr>
+<tr><td style="padding:10px 14px;color:#6b7280;vertical-align:top;">Device</td><td style="padding:10px 14px;color:#111827;word-break:break-word;"><%%= @user_agent %></td></tr>
+</table>
+<p style="margin:24px 0;"><a href="<%%= @account_sessions_url %>" style="display:inline-block;background:<%%= Authify.configuration.primary_color %>;color:#fff;text-decoration:none;font-weight:700;padding:13px 20px;border-radius:10px;">Review active sessions</a></p>
+<p style="margin:0;color:#4b5563;font-size:14px;line-height:1.7;">If this was you, no action is needed. If you do not recognize this activity, change your password immediately and revoke unfamiliar sessions.</p>

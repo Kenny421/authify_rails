@@ -1,0 +1,151 @@
+module Authify
+  class PasskeysController < ApplicationController
+    require_authentication only: %i[index registration_options create destroy]
+    before_action :require_recent_authentication, only: %i[registration_options create destroy]
+    rate_limit to: 10, within: 3.minutes, only: %i[registration_options authentication_options create authenticate destroy], with: -> { head :too_many_requests }
+    rescue_from WebAuthn::Error, ArgumentError, JSON::ParserError, ActiveRecord::RecordInvalid, with: :reject_ceremony
+
+    def index; end
+
+    def registration_options
+      current_user.with_lock do
+        current_user.update_column(:authify_webauthn_id, SecureRandom.urlsafe_base64(32)) if current_user.authify_webauthn_id.blank?
+      end
+      options = WebAuthn::Credential.options_for_create(
+        user: { id: current_user.authify_webauthn_id, name: current_user.email },
+        exclude: current_user.authify_passkeys.pluck(:credential_id),
+        authenticator_selection: { resident_key: "required", user_verification: "required" }
+      )
+      store_ceremony("registration", options.challenge, current_user.id)
+      render json: options
+    end
+
+    def create
+      ceremony = consume_ceremony("registration")
+      return reject_ceremony unless ceremony && ceremony["user_id"] == current_user.id
+      credential = parse_webauthn do
+        parsed = WebAuthn::Credential.from_create(credential_params)
+        parsed.verify(ceremony["challenge"], user_verification: true)
+        parsed
+      end
+      current_user.with_lock do
+        return reject_ceremony unless authify_current_session_valid? && valid_ceremony_user?(ceremony, current_user) && ceremony["session_id"] == Current.authify_session.id
+        current_user.authify_passkeys.create!(credential_id: credential.id, public_key: credential.public_key, sign_count: credential.sign_count, name: params[:name].to_s.first(100).presence || "Passkey")
+        current_user.authify_invalidate_credentials!
+        authify_rotate_proven_session!("passkey_enrollment")
+        current_user.authentication_events.create!(event_type: "passkey_registered")
+      end
+      head :created
+    end
+
+    def authentication_options
+      reauth = params[:purpose] == "reauthentication"
+      return head :forbidden if reauth && !current_user
+      user = reauth ? current_user : Authify.user_scope.find_by(email: params[:email].to_s.strip.downcase)
+      ids = user ? user.authify_passkeys.pluck(:credential_id) : []
+      # A random non-existent credential avoids accidentally offering all passkeys.
+      options = WebAuthn::Credential.options_for_get(allow: ids.presence || [SecureRandom.urlsafe_base64(32)], user_verification: "required")
+      store_ceremony(reauth ? "reauthentication" : "authentication", options.challenge, user&.id)
+      render json: options
+    end
+
+    def authenticate
+      reauth = params[:purpose] == "reauthentication"
+      ceremony = consume_ceremony(reauth ? "reauthentication" : "authentication")
+      user = Authify.user_scope.find_by(id: ceremony&.dig("user_id"))
+      return reject_ceremony unless user
+      return reject_ceremony if reauth && (current_user&.id != user.id || ceremony["session_id"] != Current.authify_session&.id)
+      return_to = session[:authify_return_to]
+      user.with_lock do
+        return reject_ceremony unless valid_ceremony_user?(ceremony, user)
+        return reject_ceremony if reauth && !authify_current_session_valid?
+        credential = parse_webauthn { WebAuthn::Credential.from_get(credential_params) }
+        record = user.authify_passkeys.find_by(credential_id: credential.id)
+        return reject_ceremony unless record
+        record.with_lock do
+          parse_webauthn do
+            credential.verify(ceremony["challenge"], public_key: record.public_key, sign_count: record.sign_count, user_verification: true)
+          end
+          record.update!(sign_count: credential.sign_count)
+        end
+        if reauth
+          authify_rotate_proven_session!("passkey")
+        else
+          user.clear_failed_logins!
+          authify_start_session(user, authentication_method: "passkey", expected_version: ceremony["security_version"])
+          user.authentication_events.create!(event_type: "sign_in_succeeded", ip_address: request.remote_ip, user_agent: request.user_agent, metadata: { method: "passkey" })
+        end
+      end
+      render json: { redirect_to: reauth ? passkeys_path : authify_local_path(return_to, Authify.configuration.after_sign_in_path) }
+    end
+
+    def destroy
+      current_user.with_lock do
+        raise Authify::StaleAuthentication unless Current.authify_session.reload.active?
+        current_user.authify_passkeys.find(params[:id]).destroy!
+        current_user.authify_invalidate_credentials!
+        authify_rotate_proven_session!("passkey_management")
+        current_user.authentication_events.create!(event_type: "passkey_removed")
+      end
+      respond_to do |format|
+        format.html { redirect_to passkeys_path, status: :see_other }
+        format.json { head :no_content }
+      end
+    end
+
+    private
+
+    # Untrusted CBOR/JSON/base64 is handled only at the parser boundary. Business
+    # logic and database exceptions must not be hidden by a broad action rescue.
+    def parse_webauthn
+      yield
+    rescue CBOR::UnpackError, CBOR::TypeError, CBOR::StackError, JSON::ParserError, EOFError, TypeError, KeyError, NoMethodError
+      raise ArgumentError, "Malformed WebAuthn credential"
+    rescue RuntimeError => error
+      raise unless ["invalid type", "invalid id"].include?(error.message)
+      raise ArgumentError, "Malformed WebAuthn credential"
+    end
+
+    def credential_params
+      raise ArgumentError, "Credential too large" if params[:credential].to_s.bytesize > 65_536
+      raise ArgumentError, "Invalid credential" unless params[:credential].is_a?(ActionController::Parameters)
+      data = params.require(:credential).to_unsafe_h
+      raise ArgumentError, "Invalid credential" unless data["type"] == "public-key" && data["response"].is_a?(Hash) && data["rawId"].is_a?(String) && data["id"].is_a?(String)
+      required = action_name == "create" ? %w[attestationObject clientDataJSON] : %w[authenticatorData clientDataJSON signature]
+      raise ArgumentError, "Invalid credential response" unless required.all? { |key| data["response"][key].is_a?(String) && data["response"][key].present? }
+      data
+    end
+
+    def require_recent_authentication
+      head :forbidden unless authify_sensitive_authentication
+    end
+
+    def valid_ceremony_user?(data, user)
+      user.authify_security_version == data["security_version"] && user.disabled_at.nil? && !user.locked? &&
+        (!Authify.configuration.email_verification_required || user.email_verified?)
+    end
+
+    def store_ceremony(kind, challenge, user_id)
+      id = SecureRandom.urlsafe_base64(32)
+      AuthifyPasskeyChallenge.create!(token_digest: Authify::Token.digest(id), kind: kind, data: { "challenge" => challenge, "user_id" => user_id, "security_version" => Authify.user_scope.find_by(id: user_id)&.authify_security_version, "session_id" => Current.authify_session&.id }, expires_at: 5.minutes.from_now)
+      session[:authify_passkey_ceremony] = id
+    end
+
+    def consume_ceremony(kind)
+      id = session.delete(:authify_passkey_ceremony)
+      return unless id
+      # Store a challenge in the DB for atomic single-use, including authenticators
+      # whose signature counter is always zero. Cache alone is not atomic here.
+      record = AuthifyPasskeyChallenge.find_by(token_digest: Authify::Token.digest(id))
+      record&.with_lock do
+        return if record.consumed_at || record.expires_at <= Time.current || record.kind != kind
+        record.update!(consumed_at: Time.current)
+        record.data
+      end
+    end
+
+    def reject_ceremony(*)
+      head :unprocessable_entity
+    end
+  end
+end

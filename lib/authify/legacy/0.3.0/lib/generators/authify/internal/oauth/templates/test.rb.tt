@@ -1,0 +1,40 @@
+require "test_helper"
+
+class AuthifyOauthSecurityTest < ActionDispatch::IntegrationTest
+  setup do
+    Authify.configuration.pwned_password_check = false
+    Authify.configuration.email_notifications_enabled = false
+    AuthifyOauthIdentity.delete_all
+    AuthenticationEvent.delete_all
+    AuthifySession.delete_all
+    Authify.configuration.user_class.delete_all
+  end
+
+  test "verified provider email creates an identity and session" do
+    post "/auth/google_oauth2/callback", env: { "omniauth.auth" => auth_hash }
+
+    assert_redirected_to Authify.configuration.after_sign_in_path
+    identity = AuthifyOauthIdentity.find_by!(provider: "google_oauth2", uid: "provider-user-123")
+    assert identity.user.email_verified?
+    assert_equal "oauth:google_oauth2", identity.user.authify_sessions.last.authentication_method
+  end
+
+  test "unverified provider email is rejected" do
+    post "/auth/google_oauth2/callback",
+         env: { "omniauth.auth" => auth_hash(email_verified: false, uid: "unverified-123") }
+
+    assert_redirected_to new_session_path
+    assert_equal 0, AuthifyOauthIdentity.count
+  end
+
+  private
+
+  def auth_hash(email_verified: true, uid: "provider-user-123")
+    OmniAuth::AuthHash.new(
+      provider: "google_oauth2",
+      uid: uid,
+      info: { email: "oauth-user@example.com" },
+      extra: { raw_info: { email_verified: email_verified } }
+    )
+  end
+end

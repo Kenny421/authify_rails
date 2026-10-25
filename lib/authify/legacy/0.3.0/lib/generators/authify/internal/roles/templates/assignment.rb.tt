@@ -1,0 +1,4 @@
+class AuthifyRoleAssignment < ApplicationRecord
+  belongs_to :user, class_name: Authify.configuration.user_class_name
+  belongs_to :authify_role
+end

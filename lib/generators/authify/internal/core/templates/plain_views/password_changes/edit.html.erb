@@ -1,0 +1,16 @@
+<div>
+  <h1>Change password</h1>
+  <p>Changing your password signs out every device.</p>
+
+  <% if @user.errors.any? %>
+    <ul><% @user.errors.full_messages.each do |message| %><li><%= message %></li><% end %></ul>
+  <% end %>
+
+  <%= form_with model: @user, url: account_password_path, method: :patch do |form| %>
+    <%= text_field_tag :code, nil, autocomplete: "one-time-code", placeholder: "Authenticator or recovery code (if enabled)" %>
+    <%= password_field_tag :current_password, nil, required: true, autocomplete: "current-password", placeholder: "Current password" %>
+    <%= form.password_field :password, required: true, autocomplete: "new-password", placeholder: "New password" %>
+    <%= form.password_field :password_confirmation, required: true, autocomplete: "new-password", placeholder: "Confirm new password" %>
+    <%= form.submit "Change password" %>
+  <% end %>
+</div>

@@ -8,6 +8,7 @@
 
   <%= form_with model: @user, url: account_email_path, method: :patch, class: "mt-6 space-y-4" do |form| %>
     <%= form.email_field :email, value: @user.pending_email, required: true, autocomplete: "email", placeholder: "New email address", class: "w-full rounded border p-3" %>
+    <%= text_field_tag :code, nil, autocomplete: "one-time-code", placeholder: "Authenticator or recovery code (if enabled)" %>
     <%= password_field_tag :current_password, nil, autocomplete: "current-password", placeholder: "Current password (not needed after recent sudo verification)", class: "w-full rounded border p-3" %>
     <%= form.submit "Send verification", class: "w-full rounded bg-black p-3 text-white" %>
   <% end %>
@@ -17,7 +18,8 @@
       <p>Pending address: <strong><%= @user.pending_email %></strong></p>
       <p class="mt-1 text-sm text-gray-600">Requested <%= time_ago_in_words(@user.email_change_sent_at) %> ago.</p>
       <%= form_with url: account_email_path, method: :delete, class: "mt-4 space-y-3" do %>
-        <%= password_field_tag :current_password, nil, autocomplete: "current-password", placeholder: "Current password (not needed after recent sudo verification)", class: "w-full rounded border p-3" %>
+        <%= text_field_tag :code, nil, autocomplete: "one-time-code", placeholder: "Authenticator or recovery code (if enabled)" %>
+    <%= password_field_tag :current_password, nil, autocomplete: "current-password", placeholder: "Current password (not needed after recent sudo verification)", class: "w-full rounded border p-3" %>
         <%= submit_tag "Cancel email change", class: "rounded border px-4 py-2" %>
       <% end %>
     </div>

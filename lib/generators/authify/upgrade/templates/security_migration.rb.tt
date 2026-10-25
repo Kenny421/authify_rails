@@ -1,0 +1,10 @@
+class HardenAuthifyCredentials < ActiveRecord::Migration[8.0]
+  def up
+    require "authify/schema"
+    Authify::Schema.ensure_security!(self, :<%= user_table %>)
+  end
+
+  def down
+    raise ActiveRecord::IrreversibleMigration, "Authify security state must not be discarded automatically."
+  end
+end

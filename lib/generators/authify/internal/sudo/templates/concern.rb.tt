@@ -22,7 +22,7 @@ module Authify
     def authify_require_sudo(freshness: nil)
       return if authify_sudo_valid?(freshness: freshness)
 
-      session[:authify_sudo_return_to] = request.fullpath if request.get?
+      session[:authify_sudo_return_to] = request.fullpath if request.get? || request.head?
       redirect_to new_sudo_path, alert: "Confirm your identity to continue."
     end
 

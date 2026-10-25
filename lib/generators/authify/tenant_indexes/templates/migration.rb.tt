@@ -1,0 +1,19 @@
+class ScopeAuthifyEmailIndexesToTenants < ActiveRecord::Migration[8.0]
+  def up
+    table = :<%= user_table %>
+    missing = select_value("SELECT COUNT(*) FROM #{quote_table_name(table)} WHERE tenant_id IS NULL").to_i
+    raise ActiveRecord::MigrationError, "Backfill tenant_id for every account first" if missing.positive?
+    %w[email pending_email].each do |column|
+      composite = "index_<%= user_table %>_on_tenant_lower_#{column}"
+      add_index table, "tenant_id, LOWER(#{column})", unique: true, name: composite unless index_name_exists?(table, composite)
+      global = "index_<%= user_table %>_on_lower_#{column}"
+      remove_index table, name: global if index_name_exists?(table, global)
+    end
+    change_column_null table, :tenant_id, false
+  end
+
+  def down
+    # A rollback may be impossible once tenants share email addresses.
+    raise ActiveRecord::IrreversibleMigration, "Review duplicate addresses and tenant data before restoring global email indexes."
+  end
+end

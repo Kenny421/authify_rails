@@ -5,7 +5,20 @@ class AuthifyTwoFactorCredential < ApplicationRecord
   encrypts :secret_ciphertext
 
   def verify?(code)
-    ROTP::TOTP.new(secret_ciphertext).verify(code.to_s, drift_behind: 30, drift_ahead: 30).present?
+    return false if secret_ciphertext.blank?
+
+    accepted = false
+    with_lock do
+      return false unless confirmed_at && disabled_at.nil?
+      timestep = ROTP::TOTP.new(secret_ciphertext).verify(
+        code.to_s, drift_behind: 30, drift_ahead: 30, after: last_accepted_at
+      )
+      if timestep
+        update!(last_accepted_at: timestep)
+        accepted = true
+      end
+    end
+    accepted
   end
 
   def generate_recovery_codes!
@@ -18,6 +31,7 @@ class AuthifyTwoFactorCredential < ApplicationRecord
     digest = Authify::Token.digest(normalize_recovery_code(code))
     consumed = false
     with_lock do
+      return false unless confirmed_at && disabled_at.nil?
       digests = recovery_code_digests.dup
       index = digests.index { |stored| ActiveSupport::SecurityUtils.secure_compare(stored, digest) }
       if index

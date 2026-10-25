@@ -1,0 +1,60 @@
+class AuthifyAbuseBucket < ApplicationRecord
+  # Minute buckets bound row growth. Atomic upsert/increment works across workers.
+  def self.bump!(kind:, action:, source:, account:, now:, lifetime:)
+    minute = Time.at(now.to_i / 60 * 60).utc
+    identity = { kind: kind, action: action, source_digest: source, account_digest: account, window_started_at: minute }
+    upsert_all([identity.merge(count: 1, expires_at: minute + lifetime + 60, created_at: now, updated_at: now)],
+      unique_by: :index_authify_abuse_identity,
+      on_duplicate: Arel.sql('"count" = "authify_abuse_buckets"."count" + 1, "updated_at" = EXCLUDED."updated_at"'), returning: false)
+  end
+
+  # Fixed windows are not extended by rejected requests. The conditional upsert makes the
+  # allowance atomic across processes, including distributed second-factor guesses.
+  def self.consume_budget!(kind:, key:, now:, limit:, window:)
+    seconds = window.to_i
+    raise ArgumentError, "Invalid verification budget" unless limit.is_a?(Integer) && limit.positive? && seconds.positive?
+    start = Time.at(now.to_i / seconds * seconds).utc
+    identity = { kind: kind, action: kind, source_digest: key, account_digest: key, window_started_at: start }
+    # The conditional upsert returns a row only when the increment is allowed.
+    # Rejected attempts change neither the counter nor the fixed expiry time.
+    update_sql = sanitize_sql_array(['"count" = "authify_abuse_buckets"."count" + 1, "updated_at" = EXCLUDED."updated_at" WHERE "authify_abuse_buckets"."count" < ?', limit])
+    result = upsert_all([identity.merge(count: 1, expires_at: start + seconds, created_at: now, updated_at: now)],
+      unique_by: :index_authify_abuse_identity,
+      on_duplicate: Arel.sql(update_sql),
+      returning: %w[id])
+    result.rows.any?
+  end
+
+  def self.source_requests(action:, source:, now:, window:)
+    where(kind: "source_request", action: action, source_digest: source).where("window_started_at >= ? AND expires_at > ?", Time.at((now - window).to_i / 60 * 60).utc, now).sum(:count)
+  end
+
+  def self.snapshot(action:, source:, account:, now:, window:)
+    scope = where(action: action).where("window_started_at >= ? AND expires_at > ?", Time.at((now - window).to_i / 60 * 60).utc, now)
+    scope = scope.where("source_digest = ? OR account_digest = ?", source, account)
+    connection = self.connection
+    source_match = "source_digest = #{connection.quote(source)}"
+    account_match = "account_digest = #{connection.quote(account)}"
+    pair_match = "#{source_match} AND #{account_match}"
+    sums = ["kind = 'request' AND #{source_match}", "kind = 'request' AND #{account_match}",
+      "kind = 'failure' AND #{source_match}", "kind = 'failure' AND #{account_match}", "kind = 'failure' AND #{pair_match}"]
+    expressions = sums.map { |condition| "COALESCE(SUM(CASE WHEN #{condition} THEN count ELSE 0 END), 0)" }
+    expressions << "MAX(CASE WHEN kind = 'failure' AND #{pair_match} THEN updated_at END)"
+    expressions << "COUNT(DISTINCT CASE WHEN kind = 'failure' AND #{source_match} THEN account_digest END)"
+    values = scope.pick(*expressions.map { |sql| Arel.sql(sql) })
+    values[5] = type_for_attribute("updated_at").deserialize(values[5])
+    %i[requests account_requests source_failures account_failures pair_failures last_failure_at distinct_accounts].zip(values).to_h
+  end
+
+  def self.trust!(key, account:, expires_at:)
+    upsert({ kind: "trusted", action: "sign_in", source_digest: key, account_digest: account, window_started_at: Time.at(0).utc, count: 1, expires_at: expires_at }, unique_by: :index_authify_abuse_identity)
+  end
+
+  def self.forget_devices!(account)
+    where(kind: "trusted", account_digest: account).delete_all
+  end
+
+  def self.trusted?(key, now:)
+    where(kind: "trusted", source_digest: key).where("expires_at > ?", now).exists?
+  end
+end

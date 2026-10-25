@@ -1,0 +1,6 @@
+# Set explicit trusted origins and RP ID in every deployed environment.
+WebAuthn.configure do |config|
+  config.allowed_origins = ENV.fetch("AUTHIFY_WEBAUTHN_ORIGINS", Rails.env.production? ? "" : "http://localhost:3000").split(",").map(&:strip)
+  config.rp_id = ENV.fetch("AUTHIFY_WEBAUTHN_RP_ID", Rails.env.production? ? "" : "localhost")
+  config.rp_name = Authify.configuration.app_name
+end

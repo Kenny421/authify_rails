@@ -13,7 +13,10 @@ module Authify
 
     def update
       @user = current_user
-      token = @user.request_email_change!(email_params[:email])
+      token = @user.with_lock do
+        raise Authify::StaleAuthentication unless Current.authify_session.reload.active?
+        @user.request_email_change!(email_params[:email])
+      end
       Authify.configuration.mailer_class.with(user: @user, token: token).email_change_verification.deliver_later
       Authify.configuration.mailer_class.with(user: @user).email_change_requested.deliver_later
       @user.authentication_events.create!(event_type: "email_change_requested")
@@ -23,13 +26,16 @@ module Authify
     end
 
     def destroy
-      current_user.cancel_email_change!
+      current_user.with_lock do
+        raise Authify::StaleAuthentication unless Current.authify_session.reload.active?
+        current_user.cancel_email_change!
+      end
       current_user.authentication_events.create!(event_type: "email_change_cancelled")
       redirect_to edit_account_email_path, notice: "Pending email change cancelled."
     end
 
     def show
-      user = Authify.configuration.user_class.find_by(
+      user = Authify.user_scope.find_by(
         email_change_token_digest: Authify::Token.digest(params[:token])
       )
       return invalid_token unless user&.email_change_token_valid?(params[:token])
@@ -38,6 +44,7 @@ module Authify
       user.with_lock do
         raise ActiveRecord::RecordInvalid, user unless user.email_change_token_valid?(params[:token])
 
+        Authify::AbuseProtection.new(source: request.remote_ip, account: user.email, tenant: Current.authify_tenant_id).forget_devices!
         user.update!(
           email: user.pending_email,
           email_verified_at: Time.current,
@@ -69,23 +76,8 @@ module Authify
     end
 
     def require_sensitive_authentication
-      return if recent_sudo_authentication?
-      return if recent_provider_authentication?
-      return if current_user.authenticate(params[:current_password])
-
-      redirect_to edit_account_email_path, alert: "Current password is incorrect."
-    end
-
-    def recent_sudo_authentication?
-      record = Current.authify_session
-      record&.respond_to?(:sudo_expires_at) && record.sudo_expires_at&.future?
-    end
-
-    def recent_provider_authentication?
-      record = Current.authify_session
-      record&.respond_to?(:authentication_method) &&
-        record.authentication_method.to_s.start_with?("oauth:") &&
-        record.created_at >= Authify.configuration.sudo_timeout.ago
+      return if authify_sensitive_authentication
+      redirect_to edit_account_email_path, alert: "Confirm your current password and verification code (if enabled)."
     end
 
     def invalid_token

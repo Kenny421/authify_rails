@@ -1,0 +1,13 @@
+module Authify
+  module Admin
+    class AuthenticationEventsController < ::ApplicationController
+      require_authentication
+      before_action :require_authify_admin
+      def index = @events = AuthenticationEvent.order(created_at: :desc).limit(500)
+      private
+      def require_authify_admin
+        head :forbidden unless current_user.respond_to?(:has_role?) && current_user.has_role?(:admin)
+      end
+    end
+  end
+end

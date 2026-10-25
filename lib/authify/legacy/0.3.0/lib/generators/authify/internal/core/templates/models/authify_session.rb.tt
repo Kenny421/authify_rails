@@ -1,0 +1,17 @@
+class AuthifySession < ApplicationRecord
+  belongs_to :user, class_name: Authify.configuration.user_class_name
+
+  scope :active, -> { where(revoked_at: nil).where("expires_at > ?", Time.current) }
+
+  def active?
+    revoked_at.nil? && expires_at.future? && (remembered? || idle_valid?)
+  end
+
+  def idle_valid?
+    last_active_at >= Authify.configuration.session_idle_timeout.ago
+  end
+
+  def revoke!
+    update!(revoked_at: Time.current)
+  end
+end

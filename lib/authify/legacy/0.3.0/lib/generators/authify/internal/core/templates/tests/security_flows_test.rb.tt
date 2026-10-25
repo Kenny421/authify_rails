@@ -1,0 +1,138 @@
+require "test_helper"
+
+class AuthifySecurityFlowsTest < ActionDispatch::IntegrationTest
+  setup do
+    Authify.configuration.pwned_password_check = false
+    Authify.configuration.email_notifications_enabled = false
+    AuthenticationEvent.delete_all
+    AuthifySession.delete_all
+    Authify.configuration.user_class.delete_all
+  end
+
+  test "verified user can sign in and session fixation token is replaced" do
+    user = create_user(verified: true)
+
+    post session_path, params: { email: user.email, password: "correct-password-123" }
+
+    assert_redirected_to Authify.configuration.after_sign_in_path
+    assert_equal 1, user.authify_sessions.count
+    assert_equal "password", user.authify_sessions.last.authentication_method
+  end
+
+  test "remembered session survives idle timeout" do
+    user = create_user(verified: true)
+
+    post session_path, params: {
+      email: user.email,
+      password: "correct-password-123",
+      remember_me: "1"
+    }
+
+    record = user.authify_sessions.last
+    assert record.remembered?
+    travel Authify.configuration.session_idle_timeout + 1.minute do
+      get account_sessions_path
+      assert_response :success
+    end
+  end
+
+  test "session without remember me expires after idle timeout" do
+    user = create_user(verified: true)
+
+    post session_path, params: { email: user.email, password: "correct-password-123" }
+
+    record = user.authify_sessions.last
+    assert_not record.remembered?
+    travel Authify.configuration.session_idle_timeout + 1.minute do
+      get account_sessions_path
+      assert_redirected_to new_session_path
+    end
+  end
+
+  test "remembered session expires after remember me duration" do
+    user = create_user(verified: true)
+
+    post session_path, params: {
+      email: user.email,
+      password: "correct-password-123",
+      remember_me: "1"
+    }
+
+    travel Authify.configuration.remember_me_duration + 1.minute do
+      get account_sessions_path
+      assert_redirected_to new_session_path
+    end
+  end
+
+  test "unverified user cannot create a session" do
+    user = create_user(verified: false)
+
+    post session_path, params: { email: user.email, password: "correct-password-123" }
+
+    assert_redirected_to new_email_verification_path
+    assert_equal 0, user.authify_sessions.count
+  end
+
+  test "sign in failure does not reveal whether account exists" do
+    user = create_user(verified: true)
+
+    post session_path, params: { email: user.email, password: "wrong-password" }
+    existing_response = flash[:alert]
+    post session_path, params: { email: "missing@example.com", password: "wrong-password" }
+
+    assert_equal existing_response, flash[:alert]
+  end
+
+  test "password reset request does not reveal whether account exists" do
+    user = create_user(verified: true)
+
+    post passwords_path, params: { email: user.email }
+    existing_response = flash[:notice]
+    post passwords_path, params: { email: "missing@example.com" }
+
+    assert_equal existing_response, flash[:notice]
+    assert user.reload.password_reset_token_digest.present?
+  end
+
+  test "truncated verification tokens are rejected" do
+    user = create_user(verified: false)
+    token = user.issue_email_verification!
+
+    get email_verification_path(token.first(20))
+
+    assert_redirected_to new_session_path
+    assert_not user.reload.email_verified?
+  end
+
+  test "sign out revokes the database session" do
+    user = create_user(verified: true)
+    post session_path, params: { email: user.email, password: "correct-password-123" }
+
+    delete sign_out_path
+
+    assert_redirected_to Authify.configuration.after_sign_out_path
+    assert user.authify_sessions.last.reload.revoked_at.present?
+  end
+
+  test "database prevents concurrent claims on the same pending email" do
+    first = create_user(verified: true)
+    second = create_user(verified: true)
+    target = "reserved-email@example.com"
+    first.update_columns(pending_email: target)
+
+    assert_raises ActiveRecord::RecordNotUnique do
+      second.update_columns(pending_email: target)
+    end
+  end
+
+  private
+
+  def create_user(verified:)
+    Authify.configuration.user_class.create!(
+      email: "person-#{SecureRandom.hex(4)}@example.com",
+      password: "correct-password-123",
+      password_confirmation: "correct-password-123",
+      email_verified_at: (Time.current if verified)
+    )
+  end
+end

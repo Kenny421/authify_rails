@@ -4,14 +4,15 @@ class AuthifyOauthSecurityTest < ActionDispatch::IntegrationTest
   setup do
     Authify.configuration.pwned_password_check = false
     Authify.configuration.email_notifications_enabled = false
+    OmniAuth.config.test_mode = true
     AuthifyOauthIdentity.delete_all
     AuthenticationEvent.delete_all
     AuthifySession.delete_all
-    Authify.configuration.user_class.delete_all
+    Authify.configuration.user_class.destroy_all
   end
 
   test "verified provider email creates an identity and session" do
-    post "/auth/google_oauth2/callback", env: { "omniauth.auth" => auth_hash }
+    oauth_callback(auth_hash)
 
     assert_redirected_to Authify.configuration.after_sign_in_path
     identity = AuthifyOauthIdentity.find_by!(provider: "google_oauth2", uid: "provider-user-123")
@@ -20,14 +21,25 @@ class AuthifyOauthSecurityTest < ActionDispatch::IntegrationTest
   end
 
   test "unverified provider email is rejected" do
-    post "/auth/google_oauth2/callback",
-         env: { "omniauth.auth" => auth_hash(email_verified: false, uid: "unverified-123") }
+    oauth_callback(auth_hash(email_verified: false, uid: "unverified-123"))
 
     assert_redirected_to new_session_path
     assert_equal 0, AuthifyOauthIdentity.count
   end
 
+  teardown do
+    OmniAuth.config.mock_auth.delete(:google_oauth2)
+    OmniAuth.config.test_mode = false
+  end
+
   private
+
+  def oauth_callback(auth)
+    OmniAuth.config.mock_auth[:google_oauth2] = auth
+    # Test the callback through the middleware's documented test mode.
+    get "/auth/google_oauth2/callback"
+  end
+
 
   def auth_hash(email_verified: true, uid: "provider-user-123")
     OmniAuth::AuthHash.new(
@@ -36,5 +48,26 @@ class AuthifyOauthSecurityTest < ActionDispatch::IntegrationTest
       info: { email: "oauth-user@example.com" },
       extra: { raw_info: { email_verified: email_verified } }
     )
+  end
+end
+
+class AuthifyOauthSecurityTest
+  test "verified provider email cannot claim an existing local account" do
+    user = Authify.configuration.user_class.create!(email: "oauth-user@example.com", password: "correct-password-123")
+    oauth_callback(auth_hash)
+    assert_redirected_to new_session_path
+    assert_nil AuthifyOauthIdentity.find_by(user_id: user.id)
+    refute user.reload.email_verified?
+    assert_empty user.authify_sessions
+  end
+
+  test "generic verification and string claims are never treated as email proof" do
+    ["true", "false", nil].each_with_index do |value, index|
+      auth = auth_hash(email_verified: value, uid: "ambiguous-#{index}")
+      auth.extra.raw_info.verified = true
+      oauth_callback(auth)
+      assert_redirected_to new_session_path
+    end
+    assert_empty AuthifyOauthIdentity.all
   end
 end

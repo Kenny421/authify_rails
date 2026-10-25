@@ -1,0 +1,4 @@
+<%% content_for :preheader, "An email address change was requested." %>
+<h1 style="margin:0 0 16px;font-size:26px;line-height:1.25;">Email change requested</h1>
+<p style="margin:0 0 16px;color:#374151;line-height:1.7;">A request was made to change your account email to <strong><%%= @new_email %></strong>.</p>
+<p style="margin:0;color:#4b5563;line-height:1.7;">Your current email remains active. If you did not make this request, sign in to cancel it and secure your account.</p>

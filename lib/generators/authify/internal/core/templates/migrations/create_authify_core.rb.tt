@@ -24,6 +24,9 @@ class CreateAuthifyCore < ActiveRecord::Migration[8.0]
       add_index :<%= options[:user_model].underscore.pluralize %>, :email_verification_token_digest, unique: true
       add_index :<%= options[:user_model].underscore.pluralize %>, :email_change_token_digest, unique: true
       add_index :<%= options[:user_model].underscore.pluralize %>, "LOWER(pending_email)", unique: true, name: "index_<%= options[:user_model].underscore.pluralize %>_on_lower_pending_email"
+    else
+      require "authify/schema"
+      Authify::Schema.ensure_user!(self, :<%= options[:user_model].underscore.pluralize %>)
     end
 
     create_table :authify_sessions do |t|
@@ -50,5 +53,8 @@ class CreateAuthifyCore < ActiveRecord::Migration[8.0]
       t.timestamps
     end
     add_index :authentication_events, :event_type
+    require "authify/schema"
+    Authify::Schema.ensure_abuse!(self)
+    Authify::Schema.ensure_security!(self, :<%= options[:user_model].underscore.pluralize %>)
   end
 end

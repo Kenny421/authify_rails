@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><%%= message.subject %></title>
+</head>
+<body style="margin:0;padding:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;"><%%= content_for?(:preheader) ? yield(:preheader) : message.subject %></div>
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f3f4f6;padding:32px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;">
+        <tr><td style="padding:0 0 20px;text-align:center;">
+          <%% if Authify.configuration.logo_url.present? %>
+            <img src="<%%= Authify.configuration.logo_url %>" alt="<%%= Authify.configuration.app_name %>" style="max-height:48px;max-width:220px;border:0;">
+          <%% else %>
+            <span style="font-size:22px;font-weight:700;color:#111827;"><%%= Authify.configuration.app_name %></span>
+          <%% end %>
+        </td></tr>
+        <tr><td style="background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;padding:36px 32px;box-shadow:0 1px 2px rgba(0,0,0,.04);">
+          <%%= yield %>
+        </td></tr>
+        <tr><td style="padding:22px 20px 0;text-align:center;color:#6b7280;font-size:12px;line-height:1.6;">
+          <%%= Authify.configuration.email_footer %>
+          <%% if Authify.configuration.support_email.present? %><br>Need help? Contact <a href="mailto:<%%= Authify.configuration.support_email %>" style="color:#4b5563;"><%%= Authify.configuration.support_email %></a>.<%% end %>
+          <br>&copy; <%%= Time.current.year %> <%%= Authify.configuration.company_name %>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>

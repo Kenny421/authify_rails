@@ -1,0 +1,70 @@
+class AuthifyMailer < ApplicationMailer
+  layout "authify_mailer"
+  default from: -> { Authify.configuration.mailer_from }
+
+  def email_verification
+    setup_user
+    @token = params[:token]
+    @action_url = email_verification_url(@token)
+    mail to: @user.email, subject: subject_for("Verify your email address")
+  end
+
+  def email_change_verification
+    setup_user
+    @token = params[:token]
+    @new_email = @user.pending_email
+    @action_url = confirm_email_change_url(@token)
+    mail to: @new_email, subject: subject_for("Confirm your new email address")
+  end
+
+  def email_change_requested
+    setup_user
+    @new_email = @user.pending_email
+    mail to: @user.email, subject: subject_for("Email change requested")
+  end
+
+  def email_changed
+    setup_user
+    @previous_email = params[:previous_email]
+    mail to: params.fetch(:recipient), subject: subject_for("Your email address was changed")
+  end
+
+  def password_reset
+    setup_user
+    @token = params[:token]
+    @action_url = edit_password_url(@token)
+    mail to: @user.email, subject: subject_for("Create a new password")
+  end
+
+  def welcome
+    setup_user
+    @action_url = Authify.configuration.after_sign_in_path
+    mail to: @user.email, subject: subject_for("Welcome")
+  end
+
+  def password_changed
+    setup_user
+    mail to: @user.email, subject: subject_for("Your password was changed")
+  end
+
+  def new_sign_in
+    setup_user
+    @ip_address = params[:ip_address]
+    @user_agent = params[:user_agent].presence || "Unknown browser or device"
+    @signed_in_at = params[:signed_in_at] || Time.current
+    @account_sessions_url = account_sessions_url
+    mail to: @user.email, subject: subject_for("New sign-in to your account")
+  end
+
+  private
+
+  def setup_user
+    @user = params.fetch(:user)
+    @app_name = Authify.configuration.app_name
+    @support_email = Authify.configuration.support_email
+  end
+
+  def subject_for(copy)
+    "#{copy} · #{Authify.configuration.app_name}"
+  end
+end

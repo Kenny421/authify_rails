@@ -3,12 +3,14 @@ module Authify
     DUMMY_PASSWORD_DIGEST = BCrypt::Password.create(SecureRandom.base58(48)).to_s.freeze
 
     rate_limit to: 10, within: 3.minutes, only: :create,
+               unless: -> { Authify.configuration.abuse_mode.to_sym == :enforce },
                with: -> { redirect_to new_session_path, alert: "Too many sign-in attempts. Try again later." }
 
     def new; end
 
     def create
-      user = Authify.configuration.user_class.find_by(email: params[:email].to_s.strip.downcase)
+      return unless authify_abuse_check(:sign_in, email: params[:email])
+      user = Authify.user_scope.find_by(email: params[:email].to_s.strip.downcase)
       authenticated = if user
                         user.authenticate(params[:password]).present?
                       else
@@ -30,26 +32,27 @@ module Authify
 
         credential = active_two_factor_credential_for(user)
         if credential
-          session[:authify_pending_two_factor] = {
-            user_id: user.id,
-            remember: params[:remember_me] == "1",
-            authentication_method: "password",
-            started_at: Time.current.to_i
-          }
+          authify_begin_factor_challenge(user, credential, remember: params[:remember_me] == "1", authentication_method: "password")
           return redirect_to new_two_factor_challenge_path
         end
 
+        return authify_abuse_challenge if @authify_challenge_required
         complete_sign_in(user, remember: params[:remember_me] == "1")
       else
+        authify_abuse_failed
         user&.record_failed_login!
         AuthenticationEvent.create!(user: user, event_type: "sign_in_failed", ip_address: request.remote_ip, user_agent: request.user_agent)
-        redirect_to new_session_path, alert: "Unable to sign in with those credentials."
+        if @authify_challenge_required
+          authify_abuse_challenge
+        else
+          redirect_to new_session_path, alert: "Unable to sign in with those credentials."
+        end
       end
     end
 
     def destroy
       authify_end_session
-      redirect_to Authify.configuration.after_sign_out_path, notice: "Signed out."
+      redirect_to authify_local_path(Authify.configuration.after_sign_out_path), notice: "Signed out."
     end
 
     private
@@ -73,7 +76,7 @@ module Authify
           signed_in_at: Time.current
         ).new_sign_in.deliver_later
       end
-      redirect_to return_to || Authify.configuration.after_sign_in_path
+      redirect_to authify_local_path(return_to, Authify.configuration.after_sign_in_path)
     end
 
     def active_two_factor_credential_for(user)

@@ -2,6 +2,7 @@ module Authify
   class TwoFactorChallengesController < ApplicationController
     CHALLENGE_TTL = 5.minutes
     rate_limit to: 10, within: 3.minutes, only: :create,
+               unless: -> { Authify.configuration.abuse_mode.to_sym == :enforce },
                with: -> { redirect_to new_session_path, alert: "Too many verification attempts. Sign in again later." }
 
     before_action :load_pending_challenge
@@ -9,11 +10,31 @@ module Authify
     def new; end
 
     def create
-      verification_method = if @credential.verify?(params[:code])
-                              "totp"
-                            elsif @credential.consume_recovery_code!(params[:code])
-                              "recovery_code"
-                            end
+      verification_method = nil
+      @user.with_lock do
+        @credential.reload
+        @challenge.with_lock do
+          return expired_challenge unless @challenge.usable_for?(@user, @credential)
+          risk = Authify::AbuseProtection.new(source: request.remote_ip, account: @user.email, tenant: Current.authify_tenant_id, action: :factor)
+          return expired_challenge unless risk.factor_attempt!(challenge: pending_challenge[:challenge_id])
+          @challenge.update!(attempts: @challenge.attempts + 1)
+          verification_method = if @credential.verify?(params[:code])
+                                  "totp"
+                                elsif @credential.consume_recovery_code!(params[:code])
+                                  "recovery_code"
+                                end
+          @challenge.update!(consumed_at: Time.current) if verification_method || @challenge.attempts >= 5
+        end
+        if verification_method
+          remember = pending_challenge[:remember]
+          authentication_method = pending_challenge[:authentication_method].presence || "password"
+          @return_to = session[:authify_return_to]
+          clear_pending_challenge
+          @user.clear_failed_logins!
+          @user.update_column(:last_signed_in_at, Time.current)
+          authify_start_session(@user, remember: remember, authentication_method: authentication_method, expected_version: @challenge.authify_security_version)
+        end
+      end
       unless verification_method
         @user.record_failed_login!
         @user.authentication_events.create!(
@@ -25,13 +46,6 @@ module Authify
         return redirect_to(new_two_factor_challenge_path, alert: "Invalid authenticator code.")
       end
 
-      remember = pending_challenge[:remember]
-      authentication_method = pending_challenge[:authentication_method].presence || "password"
-      return_to = session[:authify_return_to]
-      clear_pending_challenge
-      @user.clear_failed_logins!
-      @user.update_column(:last_signed_in_at, Time.current)
-      authify_start_session(@user, remember: remember, authentication_method: authentication_method)
       unique_sign_in = AuthenticationEvent.unique_sign_in_for?(
         user: @user,
         ip_address: request.remote_ip,
@@ -44,7 +58,7 @@ module Authify
         metadata: { second_factor: verification_method }
       )
       send_new_sign_in_notification if unique_sign_in
-      redirect_to return_to || Authify.configuration.after_sign_in_path
+      redirect_to authify_local_path(@return_to, Authify.configuration.after_sign_in_path)
     end
 
     private
@@ -52,11 +66,12 @@ module Authify
     def load_pending_challenge
       data = pending_challenge
       started_at = Time.zone.at(data[:started_at].to_i) if data
-      @user = Authify.configuration.user_class.find_by(id: data&.dig(:user_id))
+      @user = Authify.user_scope.find_by(id: data&.dig(:user_id))
       @credential = active_two_factor_credential_for(@user)
 
+      @challenge = AuthifySignInChallenge.find_by(token_digest: Authify::Token.digest(data&.dig(:challenge_id)))
       verified = !Authify.configuration.email_verification_required || @user&.email_verified?
-      return if started_at && started_at >= CHALLENGE_TTL.ago && @user && @credential && verified && !@user.locked? && @user.disabled_at.blank?
+      return if started_at && started_at >= CHALLENGE_TTL.ago && @user && @credential && verified && !@user.locked? && @user.disabled_at.blank? && @challenge&.usable_for?(@user, @credential)
 
       clear_pending_challenge
       redirect_to new_session_path, alert: "Please sign in again."
@@ -66,7 +81,13 @@ module Authify
       session[:authify_pending_two_factor]&.with_indifferent_access
     end
 
+    def expired_challenge
+      clear_pending_challenge
+      redirect_to new_session_path, alert: "Please sign in again."
+    end
+
     def clear_pending_challenge
+      AuthifySignInChallenge.where(id: @challenge.id, consumed_at: nil).update_all(consumed_at: Time.current) if @challenge
       session.delete(:authify_pending_two_factor)
     end
 

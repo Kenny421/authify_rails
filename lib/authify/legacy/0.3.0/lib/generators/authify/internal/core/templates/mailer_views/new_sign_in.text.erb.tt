@@ -1,0 +1,11 @@
+New sign-in detected
+
+A new sign-in to <%%= @app_name %> was detected.
+
+Time: <%%= @signed_in_at.to_fs(:long) %>
+IP address: <%%= @ip_address.presence || "Unavailable" %>
+Device: <%%= @user_agent %>
+
+Review active sessions: <%%= @account_sessions_url %>
+
+If this was not you, change your password immediately and revoke unfamiliar sessions.

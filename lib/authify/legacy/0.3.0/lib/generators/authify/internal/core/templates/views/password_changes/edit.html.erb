@@ -1,0 +1,15 @@
+<div class="mx-auto max-w-md p-6">
+  <h1 class="text-2xl font-bold">Change password</h1>
+  <p class="mt-2 text-gray-600">Changing your password signs out every device.</p>
+
+  <% if @user.errors.any? %>
+    <ul class="mt-4 text-red-700"><% @user.errors.full_messages.each do |message| %><li><%= message %></li><% end %></ul>
+  <% end %>
+
+  <%= form_with model: @user, url: account_password_path, method: :patch, class: "mt-6 space-y-4" do |form| %>
+    <%= password_field_tag :current_password, nil, required: true, autocomplete: "current-password", placeholder: "Current password", class: "w-full rounded border p-3" %>
+    <%= form.password_field :password, required: true, autocomplete: "new-password", placeholder: "New password", class: "w-full rounded border p-3" %>
+    <%= form.password_field :password_confirmation, required: true, autocomplete: "new-password", placeholder: "Confirm new password", class: "w-full rounded border p-3" %>
+    <%= form.submit "Change password", class: "w-full rounded bg-black p-3 text-white" %>
+  <% end %>
+</div>

@@ -55,7 +55,7 @@ class AuthifyTest < Minitest::Test
     content = read_template("lib/generators/authify/upgrade/templates/compatibility_migration.rb.tt")
 
     assert_includes content, "unless column_exists?"
-    assert_includes content, "unless index_name_exists?"
+    assert_includes content, "Authify::Schema.ensure_user!"
     assert_includes content, ":authentication_method"
     assert_includes content, ":remembered"
     refute_includes content, "remove_column"
@@ -76,7 +76,7 @@ class AuthifyTest < Minitest::Test
     sessions = read_template("lib/generators/authify/internal/core/templates/controllers/sessions_controller.rb.tt")
     challenge = read_template("lib/generators/authify/internal/core/templates/controllers/two_factor_challenges_controller.rb.tt")
 
-    assert_includes sessions, "session[:authify_pending_two_factor]"
+    assert_includes sessions, "authify_begin_factor_challenge"
     assert_includes sessions, "redirect_to new_two_factor_challenge_path"
     refute_includes sessions, "params[:otp_code]"
     assert_includes challenge, "CHALLENGE_TTL = 5.minutes"
@@ -143,9 +143,9 @@ class AuthifyTest < Minitest::Test
   def test_two_factor_template_requires_password_and_code_to_disable
     content = read_template("lib/generators/authify/internal/two_factor/templates/controller.rb.tt")
 
-    assert_includes content, "password_ok = current_user.authenticate(params[:password]).present?"
-    assert_includes content, "code_ok = credential.verify?(params[:code])"
-    assert_includes content, "event_type: \"two_factor_disable_failed\""
+    assert_includes content, "authify_sensitive_authentication(password: params[:password], allow_recent: false)"
+    assert_includes read_template("lib/generators/authify/internal/core/templates/sensitive_authentication.rb.tt"), "credential.verify?(code)"
+    assert_includes content, "event_type: \"two_factor_disabled\""
     assert_includes content, "generate_recovery_codes!"
   end
 
@@ -189,10 +189,10 @@ class AuthifyTest < Minitest::Test
   def test_sudo_template_throttles_failed_attempts
     content = read_template("lib/generators/authify/internal/sudo/templates/controller.rb.tt")
 
-    assert_includes content, "MAX_SUDO_ATTEMPTS = 5"
-    assert_includes content, "before_action :block_if_sudo_locked, only: :create"
-    assert_includes content, "increment_sudo_failures!"
-    assert_includes content, "session[:authify_sudo_locked_until]"
+    assert_includes content, "authify_sensitive_authentication"
+    assert_includes content, "allow_recent: false"
+    assert_includes content, "rate_limit to: 10"
+    refute_includes content, "session[:authify_sudo_locked_until]"
   end
 
   def test_oauth_template_only_links_verified_provider_email
@@ -200,7 +200,7 @@ class AuthifyTest < Minitest::Test
 
     assert_includes content, "unless verified_email?(auth)"
     assert_includes content, "find_by(provider: auth.provider, uid: auth.uid)"
-    assert_includes content, "find_by!(provider: auth.provider, uid: auth.uid)"
+    assert_includes content, "if user"
 
     controller = read_template("lib/generators/authify/internal/oauth/templates/controller.rb.tt")
     assert_includes controller, "active_two_factor_credential_for(user)"

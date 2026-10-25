@@ -1,0 +1,11 @@
+<div>
+  <h1>Sign in</h1>
+  <%= form_with url: session_path do |form| %>
+    <%= render "authify/bot_challenge" %>
+    <div><%= form.label :email %><%= form.email_field :email, required: true, autocomplete: "email" %></div>
+    <div><%= form.label :password %><%= form.password_field :password, required: true, autocomplete: "current-password" %></div>
+    <label><%= check_box_tag :remember_me, "1" %> Remember me</label>
+    <%= form.submit "Sign in" %>
+  <% end %>
+  <div><%= link_to "Create account", new_registration_path %><%= link_to "Forgot password?", new_password_path %></div>
+</div>

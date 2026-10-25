@@ -1,0 +1,109 @@
+module Authify
+  module Authenticatable
+    extend ActiveSupport::Concern
+
+    included do
+      has_many :authify_sessions, foreign_key: :user_id, dependent: :destroy
+      has_many :authentication_events, foreign_key: :user_id, dependent: :destroy
+      normalizes :email, with: ->(value) { value.to_s.strip.downcase }
+      validates :email, presence: true, uniqueness: { case_sensitive: false }
+      validates :pending_email, format: { with: URI::MailTo::EMAIL_REGEXP }, allow_blank: true
+      validates :pending_email, uniqueness: { case_sensitive: false }, allow_blank: true
+      validate :authify_pending_email_available
+
+      before_create :authify_prepare_email_verification
+    end
+
+    def email_verified?
+      email_verified_at.present?
+    end
+
+    def locked?
+      locked_until.present? && locked_until.future?
+    end
+
+    def record_failed_login!
+      next_count = failed_login_attempts.to_i + 1
+      attrs = { failed_login_attempts: next_count }
+      if next_count >= Authify.configuration.maximum_login_attempts
+        attrs[:locked_until] = Authify.configuration.lockout_duration.from_now
+      end
+      update_columns(**attrs, updated_at: Time.current)
+    end
+
+    def clear_failed_logins!
+      update_columns(failed_login_attempts: 0, locked_until: nil, updated_at: Time.current)
+    end
+
+    def issue_password_reset!
+      raw, digest = Authify::Token.generate
+      update!(password_reset_token_digest: digest, password_reset_sent_at: Time.current)
+      raw
+    end
+
+    def password_reset_token_valid?(raw)
+      password_reset_sent_at.present? &&
+        password_reset_sent_at >= Authify.configuration.password_reset_ttl.ago &&
+        Authify::Token.matches?(raw, password_reset_token_digest)
+    end
+
+    def issue_email_verification!
+      raw, digest = Authify::Token.generate
+      update!(email_verification_token_digest: digest, email_verification_sent_at: Time.current)
+      raw
+    end
+
+    def request_email_change!(new_email)
+      normalized = new_email.to_s.strip.downcase
+      if normalized.blank? || normalized == email
+        errors.add(:pending_email, "must be different from your current email")
+        raise ActiveRecord::RecordInvalid, self
+      end
+      if email_change_sent_at.present? && email_change_sent_at >= Authify.configuration.email_change_request_cooldown.ago
+        errors.add(:pending_email, "was requested recently; try again shortly")
+        raise ActiveRecord::RecordInvalid, self
+      end
+
+      raw, digest = Authify::Token.generate
+      update!(
+        pending_email: normalized,
+        email_change_token_digest: digest,
+        email_change_sent_at: Time.current
+      )
+      raw
+    end
+
+    def cancel_email_change!
+      update!(
+        pending_email: nil,
+        email_change_token_digest: nil,
+        email_change_sent_at: nil
+      )
+    end
+
+    def email_change_token_valid?(raw)
+      pending_email.present? &&
+        email_change_sent_at.present? &&
+        email_change_sent_at >= Authify.configuration.email_verification_ttl.ago &&
+        Authify::Token.matches?(raw, email_change_token_digest)
+    end
+
+    private
+
+    def authify_pending_email_available
+      return if pending_email.blank?
+
+      scope = self.class.where("LOWER(email) = ?", pending_email.downcase)
+      scope = scope.where.not(id: id) if persisted?
+      errors.add(:pending_email, "is already in use") if scope.exists?
+    end
+
+    def authify_prepare_email_verification
+      return unless Authify.configuration.email_verification_required
+      raw, digest = Authify::Token.generate
+      self.email_verification_token_digest = digest
+      self.email_verification_sent_at = Time.current
+      @authify_initial_verification_token = raw
+    end
+  end
+end

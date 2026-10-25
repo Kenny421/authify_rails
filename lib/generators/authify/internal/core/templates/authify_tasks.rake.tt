@@ -1,6 +1,7 @@
 namespace :authify do
   desc "Check the Authify installation"
   task doctor: :environment do
+    require "authify/schema"
     routes = Rails.application.routes.routes.map { |route| route.name&.to_s }.compact
     user_class = Authify.configuration.user_class
     session_class = Authify.configuration.session_class
@@ -16,7 +17,10 @@ namespace :authify do
       "Password change route exists" => routes.include?("edit_account_password"),
       "Email change route exists" => routes.include?("edit_account_email"),
       "Sign-out route exists" => routes.include?("sign_out"),
+      "Required authentication columns exist" => Authify::Schema::USER_COLUMNS.keys.all? { |column| user_class.column_names.include?(column.to_s) },
       "Pending email fields exist" => %w[pending_email email_change_token_digest email_change_sent_at].all? { |column| user_class.column_names.include?(column) },
+      "Session security fields exist" => %w[authify_security_version reauthenticated_at reauthentication_method].all? { |column| session_class.column_names.include?(column) },
+      "Single-use sign-in challenge table exists" => AuthifySignInChallenge.table_exists?,
       "Session authentication method exists" => session_class.column_names.include?("authentication_method"),
       "Remembered session field exists" => session_class.column_names.include?("remembered"),
       "Mailer is configured" => Authify.configuration.mailer_class < ActionMailer::Base,
@@ -25,26 +29,74 @@ namespace :authify do
     }
 
     if manifest.feature?(:two_factor)
-      checks["Active Record encryption primary key is configured"] =
-        Rails.application.credentials.dig(:active_record_encryption, :primary_key).present? ||
-        ENV["ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY"].present?
-      checks["Active Record encryption deterministic key is configured"] =
-        Rails.application.credentials.dig(:active_record_encryption, :deterministic_key).present? ||
-        ENV["ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY"].present?
-      checks["Active Record encryption salt is configured"] =
-        Rails.application.credentials.dig(:active_record_encryption, :key_derivation_salt).present? ||
-        ENV["ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT"].present?
+      checks["Active Record encryption primary key is configured"] = ActiveRecord::Encryption.config.has_primary_key?.present?
+      checks["Active Record encryption deterministic key is configured"] = ActiveRecord::Encryption.config.has_deterministic_key?.present?
+      checks["Active Record encryption salt is configured"] = ActiveRecord::Encryption.config.has_key_derivation_salt?.present?
+      checks["TOTP replay protection column exists"] = AuthifyTwoFactorCredential.column_names.include?("last_accepted_at")
+    end
+
+    checks["Adaptive thresholds are valid"] = begin
+      Authify.configuration.validate_abuse!
+    rescue ArgumentError
+      false
+    end
+    checks["Adaptive protection mode is valid"] = %i[off observe enforce].include?(Authify.configuration.abuse_mode.to_sym)
+    if Authify.configuration.abuse_mode.to_sym != :off
+      checks["Shared abuse counter table exists"] = defined?(AuthifyAbuseBucket) && AuthifyAbuseBucket.table_exists?
+    end
+    if Authify.configuration.abuse_mode.to_sym == :enforce
+      checks["Bot challenge verifier is configured"] = Authify.configuration.bot_challenge_verifier.respond_to?(:call)
+      verifier = Authify.configuration.bot_challenge_verifier
+      checks["Bot challenge provider has configuration"] = !verifier.respond_to?(:configured?) || verifier.configured?
+      checks["Bot challenge form is configured"] = Authify.configuration.bot_challenge_partial.present?
+    end
+
+    if manifest.feature?(:api)
+      checks["API token model is available"] = defined?(AuthifyApiToken) && AuthifyApiToken.table_exists?
+      checks["API token security version exists"] = AuthifyApiToken.column_names.include?("authify_security_version") if checks["API token model is available"]
+      checks["API authentication concern is available"] = defined?(Authify::ApiAuthentication).present?
+    end
+    if manifest.feature?(:passkeys)
+      checks["Passkey models are available"] = defined?(AuthifyPasskey) && AuthifyPasskey.table_exists? && AuthifyPasskeyChallenge.table_exists?
+      checks["Passkey RP ID is configured"] = WebAuthn.configuration.rp_id.present?
+      checks["Passkey trusted origins are configured"] = WebAuthn.configuration.allowed_origins.present?
+    end
+    if manifest.feature?(:multi_tenant)
+      checks["Tenant resolver is configured"] = Authify.configuration.tenant_resolver.respond_to?(:call)
+      if Authify.configuration.tenant_enabled
+        key = Authify.configuration.tenant_key.to_s
+        checks["Tenant column exists"] = user_class.column_names.include?(key)
+        expected_index = "index_#{user_class.table_name}_on_tenant_lower_email"
+        checks["Tenant email uniqueness index exists"] = user_class.connection.indexes(user_class.table_name).any? { |index| index.name == expected_index && index.unique }
+        checks["All accounts have a tenant"] = user_class.where(key => nil).none? if checks["Tenant column exists"]
+      else
+        puts "Tenant support is prepared but disabled; configure and backfill before enabling."
+      end
     end
 
     if Rails.env.production?
       checks["Force SSL is enabled"] = Rails.application.config.force_ssl == true
       checks["Mailer host is configured"] = ActionMailer::Base.default_url_options[:host].present?
-      checks["Shared cache store is configured"] = Rails.application.config.cache_store.present? &&
-        Rails.application.config.cache_store.to_s != "null_store"
+      checks["Shared cache store is configured"] = !Rails.cache.is_a?(ActiveSupport::Cache::NullStore) && !Rails.cache.is_a?(ActiveSupport::Cache::MemoryStore)
     end
 
     checks.each { |name, passed| puts "#{passed ? '✔' : '✘'} #{name}" }
     abort "Authify doctor found problems." unless checks.values.all?
+    manifest.verify_upgrade!
+    puts "Doctor checks passed. Run your application's tests before deployment."
+  end
+
+  desc "Delete expired adaptive protection counters and trusted device records"
+  task prune_abuse: :environment do
+    puts "Deleted #{AuthifyAbuseBucket.where("expires_at < ?", Time.current).delete_all} expired abuse records."
+  end
+
+  desc "Delete expired passkey challenges (schedule periodically)"
+  task prune_challenges: :environment do
+    puts "Deleted #{AuthifySignInChallenge.where("expires_at < ?", Time.current).delete_all} expired sign-in challenges."
+    if defined?(AuthifyPasskeyChallenge)
+      puts "Deleted #{AuthifyPasskeyChallenge.where("expires_at < ?", Time.current).delete_all} expired passkey challenges."
+    end
   end
 
   desc "Print the installed Authify version and features"

@@ -1,0 +1,45 @@
+module Authify
+  module AbuseGuard
+    private
+
+    def authify_abuse_check(action, email:)
+      @authify_challenge_action = "authify_#{action}"
+      @authify_abuse = Authify::AbuseProtection.new(source: request.remote_ip, account: email,
+        tenant: Current.authify_tenant_id, device: cookies.encrypted[:authify_device], action: action)
+      @authify_abuse_decision = @authify_abuse.check!
+      return true unless Authify.configuration.abuse_mode.to_sym == :enforce
+      case @authify_abuse_decision.action
+      when :cooldown, :unavailable
+        response.set_header("Retry-After", @authify_abuse_decision.retry_after.to_s)
+        render plain: "Too many attempts. Try again shortly or use another sign-in method.", status: (@authify_abuse_decision.action == :unavailable ? :service_unavailable : :too_many_requests)
+        return false
+      when :challenge
+        @authify_challenge_required = !authify_bot_challenge_verified?(action)
+      end
+      true
+    end
+
+    def authify_abuse_failed
+      @authify_abuse&.failed!
+    end
+
+    def authify_abuse_challenge
+      @authify_challenge_required = true
+      @user ||= Authify.user_scope.new if controller_name == "registrations"
+      flash.now[:alert] = "Additional verification is required. Complete the verification below, use a passkey, or request account recovery."
+      render :new, status: :unprocessable_entity
+    end
+
+    def authify_bot_challenge_verified?(action)
+      token = params[:authify_challenge_token].to_s
+      return false if token.blank? || token.bytesize > 4096
+      verifier = Authify.configuration.bot_challenge_verifier
+      verified = verifier && verifier.call(token: token, request: request, action: "authify_#{action}") == true
+      ActiveSupport::Notifications.instrument("authify.bot_challenge", action: action, verified: !!verified)
+      verified
+    rescue StandardError => error
+      Rails.logger.warn("Authify bot challenge unavailable: #{error.class}")
+      false
+    end
+  end
+end

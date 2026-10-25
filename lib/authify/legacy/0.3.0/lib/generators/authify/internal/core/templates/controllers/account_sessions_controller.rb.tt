@@ -1,0 +1,15 @@
+module Authify
+  class AccountSessionsController < ::ApplicationController
+    require_authentication
+
+    def index
+      @sessions = current_user.authify_sessions.order(created_at: :desc)
+    end
+
+    def destroy
+      record = current_user.authify_sessions.find(params[:id])
+      record.revoke!
+      redirect_to account_sessions_path, notice: "Session revoked."
+    end
+  end
+end

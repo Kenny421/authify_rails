@@ -1,0 +1,157 @@
+require "test_helper"
+
+class AuthifyAbuseTest < ActionDispatch::IntegrationTest
+  setup do
+    @original = %i[abuse_mode maximum_login_attempts bot_challenge_verifier bot_challenge_partial abuse_source_request_limit].to_h { |key| [key, Authify.configuration.public_send(key)] }
+    Authify.configuration.abuse_mode = :enforce
+    Authify.configuration.pwned_password_check = false
+    Authify.configuration.email_notifications_enabled = false
+    Authify.configuration.tenant_enabled = false
+    AuthifyAbuseBucket.delete_all
+    Authify.configuration.user_class.destroy_all
+    @user = Authify.configuration.user_class.create!(email: "member@example.com", password: "correct-password-123", email_verified_at: Time.current)
+  end
+
+  teardown do
+    @original.each { |key, value| Authify.configuration.public_send("#{key}=", value) }
+    Current.reset
+  end
+
+  test "ordinary mistakes do not lock out a legitimate user" do
+    3.times { login(password: "wrong-password") }
+    login
+    assert_redirected_to Authify.configuration.after_sign_in_path
+    assert_equal 1, @user.authify_sessions.count
+    refute @user.reload.locked?
+  end
+
+  test "distributed attack requires additional verification without account lockout" do
+    attack = ActionDispatch::Integration::Session.new(Rails.application)
+    10.times { |i| login(client: attack, ip: "198.51.100.#{i + 1}", password: "wrong-password") }
+    refute @user.reload.locked?
+    login(ip: "203.0.113.20")
+    assert_response :unprocessable_entity
+    assert_equal 0, @user.authify_sessions.count
+    Authify.configuration.bot_challenge_verifier = ->(token:, request:, action:) { token == "verified-token" && action == "authify_sign_in" }
+    login(ip: "203.0.113.20", token: "verified-token")
+    assert_redirected_to Authify.configuration.after_sign_in_path
+    assert_equal 1, @user.authify_sessions.count
+  end
+
+  test "trusted browser can authenticate during distributed failures but cookie alone grants nothing" do
+    login
+    delete sign_out_path
+    attack = ActionDispatch::Integration::Session.new(Rails.application)
+    10.times { |i| login(client: attack, ip: "198.51.100.#{i + 1}", password: "wrong-password") }
+    login(password: "wrong-password")
+    assert_equal 0, @user.authify_sessions.active.count
+    login
+    assert_redirected_to Authify.configuration.after_sign_in_path
+    assert_equal 1, @user.authify_sessions.active.count
+  end
+
+  test "source pair cooldown expires and blocked requests do not extend it" do
+    10.times { login(password: "wrong-password") }
+    last_failure = AuthifyAbuseBucket.where(kind: "failure").maximum(:updated_at)
+    2.times { login }
+    assert_response :too_many_requests
+    assert_operator response.headers["Retry-After"].to_i, :>, 0
+    assert_equal last_failure, AuthifyAbuseBucket.where(kind: "failure").maximum(:updated_at)
+    Authify.configuration.bot_challenge_verifier = ->(**) { true }
+    travel 31.seconds do
+      login(token: "verified-token")
+      assert_redirected_to Authify.configuration.after_sign_in_path
+    end
+  end
+
+  test "observe mode measures a restrictive decision without changing login" do
+    risk = Authify::AbuseProtection.new(source: "127.0.0.1", account: @user.email)
+    10.times { risk.failed! }
+    Authify.configuration.abuse_mode = :observe
+    login
+    assert_redirected_to Authify.configuration.after_sign_in_path
+  end
+
+  test "password reset requests across IPs cannot bypass account verification" do
+    5.times { |i| post passwords_path, params: { email: @user.email }, headers: { "REMOTE_ADDR" => "198.51.100.#{i + 1}" } }
+    digest = @user.reload.password_reset_token_digest
+    post passwords_path, params: { email: @user.email }, headers: { "REMOTE_ADDR" => "203.0.113.2" }
+    assert_response :unprocessable_entity
+    assert_equal digest, @user.reload.password_reset_token_digest
+  end
+
+  test "MFA remains a verified path during an account attack" do
+    skip "2FA not installed" unless defined?(AuthifyTwoFactorCredential)
+    credential = enable_mfa
+    attack = ActionDispatch::Integration::Session.new(Rails.application)
+    10.times { |i| login(client: attack, ip: "198.51.100.#{i + 1}", password: "wrong-password") }
+    login(ip: "203.0.113.2")
+    assert_redirected_to new_two_factor_challenge_path
+    post two_factor_challenge_path, params: { code: ROTP::TOTP.new(credential.secret_ciphertext).now }
+    assert_redirected_to Authify.configuration.after_sign_in_path
+  end
+
+  test "factor attempt budget follows the challenge across source IP changes" do
+    skip "2FA not installed" unless defined?(AuthifyTwoFactorCredential)
+    enable_mfa
+    login
+    6.times do |i|
+      post two_factor_challenge_path, params: { code: "invalid" }, headers: { "REMOTE_ADDR" => "198.51.100.#{i + 1}" }
+    end
+    assert_redirected_to new_session_path
+    assert_equal 0, @user.authify_sessions.count
+    refute @user.reload.locked?
+  end
+
+  test "source hard budget rejects before allocating more account identifiers" do
+    Authify.configuration.abuse_source_request_limit = 2
+    2.times { |i| login(email: "unknown-#{i}@example.com", password: "wrong-password") }
+    count = AuthifyAbuseBucket.where(kind: "request").count
+    login(email: "another@example.com", password: "wrong-password")
+    assert_response :too_many_requests
+    assert_equal count, AuthifyAbuseBucket.where(kind: "request").count
+  end
+
+  test "counter rows contain only keyed identifiers and expire" do
+    login(password: "wrong-password")
+    AuthifyAbuseBucket.all.each do |record|
+      refute_includes record.attributes.to_s, @user.email
+      assert_match(/\A[0-9a-f]{64}\z/, record.account_digest)
+    end
+    travel 11.minutes do
+      login
+      assert_redirected_to Authify.configuration.after_sign_in_path
+    end
+  end
+
+
+  test "trusted browser is not blocked merely because a shared IP has spraying traffic" do
+    login
+    delete sign_out_path
+    10.times do |index|
+      Authify::AbuseProtection.new(source: "127.0.0.1", account: "other-#{index}@example.com").failed!
+    end
+    login
+    assert_redirected_to Authify.configuration.after_sign_in_path
+    assert_equal 1, @user.authify_sessions.active.count
+  end
+
+  test "password reset removes previously trusted device evidence" do
+    login
+    assert AuthifyAbuseBucket.where(kind: "trusted").exists?
+    raw = @user.issue_password_reset!
+    patch password_path(raw), params: { user: { password: "replacement-password-456", password_confirmation: "replacement-password-456" } }
+    assert_redirected_to new_session_path
+    assert_empty AuthifyAbuseBucket.where(kind: "trusted")
+  end
+
+  private
+  def login(client: self, email: @user.email, password: "correct-password-123", ip: "127.0.0.1", token: nil)
+    client.post session_path, params: { email: email, password: password, authify_challenge_token: token }, headers: { "REMOTE_ADDR" => ip }
+  end
+
+  def enable_mfa
+    ActiveRecord::Encryption.configure(primary_key: "a" * 32, deterministic_key: "b" * 32, key_derivation_salt: "c" * 32)
+    AuthifyTwoFactorCredential.build_for(@user).tap { |record| record.confirmed_at = Time.current; record.save! }
+  end
+end

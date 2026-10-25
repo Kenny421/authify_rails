@@ -1,0 +1,41 @@
+class AuthifyTwoFactorCredential < ApplicationRecord
+  RECOVERY_CODE_COUNT = 10
+
+  belongs_to :user, class_name: Authify.configuration.user_class_name
+  encrypts :secret_ciphertext
+
+  def verify?(code)
+    ROTP::TOTP.new(secret_ciphertext).verify(code.to_s, drift_behind: 30, drift_ahead: 30).present?
+  end
+
+  def generate_recovery_codes!
+    codes = Array.new(RECOVERY_CODE_COUNT) { SecureRandom.base58(12).upcase.scan(/.{1,4}/).join("-") }
+    update!(recovery_code_digests: codes.map { |code| Authify::Token.digest(normalize_recovery_code(code)) })
+    codes
+  end
+
+  def consume_recovery_code!(code)
+    digest = Authify::Token.digest(normalize_recovery_code(code))
+    consumed = false
+    with_lock do
+      digests = recovery_code_digests.dup
+      index = digests.index { |stored| ActiveSupport::SecurityUtils.secure_compare(stored, digest) }
+      if index
+        digests.delete_at(index)
+        update!(recovery_code_digests: digests)
+        consumed = true
+      end
+    end
+    consumed
+  end
+
+  def self.build_for(user)
+    new(user: user, secret_ciphertext: ROTP::Base32.random_base32)
+  end
+
+  private
+
+  def normalize_recovery_code(code)
+    code.to_s.delete("- ").upcase
+  end
+end

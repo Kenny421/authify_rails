@@ -1,0 +1,91 @@
+module Authify
+  class TwoFactorChallengesController < ApplicationController
+    CHALLENGE_TTL = 5.minutes
+    rate_limit to: 10, within: 3.minutes, only: :create,
+               with: -> { redirect_to new_session_path, alert: "Too many verification attempts. Sign in again later." }
+
+    before_action :load_pending_challenge
+
+    def new; end
+
+    def create
+      verification_method = if @credential.verify?(params[:code])
+                              "totp"
+                            elsif @credential.consume_recovery_code!(params[:code])
+                              "recovery_code"
+                            end
+      unless verification_method
+        @user.record_failed_login!
+        @user.authentication_events.create!(
+          event_type: "sign_in_failed_2fa",
+          ip_address: request.remote_ip,
+          user_agent: request.user_agent
+        )
+        clear_pending_challenge if @user.locked?
+        return redirect_to(new_two_factor_challenge_path, alert: "Invalid authenticator code.")
+      end
+
+      remember = pending_challenge[:remember]
+      authentication_method = pending_challenge[:authentication_method].presence || "password"
+      return_to = session[:authify_return_to]
+      clear_pending_challenge
+      @user.clear_failed_logins!
+      @user.update_column(:last_signed_in_at, Time.current)
+      authify_start_session(@user, remember: remember, authentication_method: authentication_method)
+      unique_sign_in = AuthenticationEvent.unique_sign_in_for?(
+        user: @user,
+        ip_address: request.remote_ip,
+        user_agent: request.user_agent
+      )
+      @user.authentication_events.create!(
+        event_type: "sign_in_succeeded",
+        ip_address: request.remote_ip,
+        user_agent: request.user_agent,
+        metadata: { second_factor: verification_method }
+      )
+      send_new_sign_in_notification if unique_sign_in
+      redirect_to return_to || Authify.configuration.after_sign_in_path
+    end
+
+    private
+
+    def load_pending_challenge
+      data = pending_challenge
+      started_at = Time.zone.at(data[:started_at].to_i) if data
+      @user = Authify.configuration.user_class.find_by(id: data&.dig(:user_id))
+      @credential = active_two_factor_credential_for(@user)
+
+      verified = !Authify.configuration.email_verification_required || @user&.email_verified?
+      return if started_at && started_at >= CHALLENGE_TTL.ago && @user && @credential && verified && !@user.locked? && @user.disabled_at.blank?
+
+      clear_pending_challenge
+      redirect_to new_session_path, alert: "Please sign in again."
+    end
+
+    def pending_challenge
+      session[:authify_pending_two_factor]&.with_indifferent_access
+    end
+
+    def clear_pending_challenge
+      session.delete(:authify_pending_two_factor)
+    end
+
+    def active_two_factor_credential_for(user)
+      return unless user&.respond_to?(:authify_two_factor_credential)
+
+      credential = user.authify_two_factor_credential
+      credential if credential&.confirmed_at.present? && credential.disabled_at.blank?
+    end
+
+    def send_new_sign_in_notification
+      return unless Authify.configuration.email_notifications_enabled && Authify.configuration.new_sign_in_notifications
+
+      Authify.configuration.mailer_class.with(
+        user: @user,
+        ip_address: request.remote_ip,
+        user_agent: request.user_agent,
+        signed_in_at: Time.current
+      ).new_sign_in.deliver_later
+    end
+  end
+end

@@ -1,0 +1,52 @@
+class AuthifyMailerPreview < ActionMailer::Preview
+  def email_verification
+    AuthifyMailer.with(user: preview_user, token: "preview-verification-token").email_verification
+  end
+
+  def password_reset
+    AuthifyMailer.with(user: preview_user, token: "preview-password-reset-token").password_reset
+  end
+
+  def email_change_verification
+    user = preview_user
+    user.pending_email = "new-address@example.com"
+    AuthifyMailer.with(user: user, token: "preview-email-change-token").email_change_verification
+  end
+
+  def email_change_requested
+    user = preview_user
+    user.pending_email = "new-address@example.com"
+    AuthifyMailer.with(user: user).email_change_requested
+  end
+
+  def email_changed
+    AuthifyMailer.with(
+      user: preview_user,
+      recipient: "person@example.com",
+      previous_email: "previous@example.com"
+    ).email_changed
+  end
+
+  def welcome
+    AuthifyMailer.with(user: preview_user).welcome
+  end
+
+  def password_changed
+    AuthifyMailer.with(user: preview_user).password_changed
+  end
+
+  def new_sign_in
+    AuthifyMailer.with(
+      user: preview_user,
+      ip_address: "203.0.113.42",
+      user_agent: "Chrome on macOS",
+      signed_in_at: Time.current
+    ).new_sign_in
+  end
+
+  private
+
+  def preview_user
+    Authify.configuration.user_class.first || Authify.configuration.user_class.new(email: "person@example.com")
+  end
+end

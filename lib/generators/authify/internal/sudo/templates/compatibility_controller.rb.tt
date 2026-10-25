@@ -1,0 +1,6 @@
+# Compatibility for applications generated before explicit singular routes.
+module Authify
+  class SudosController < SudoController
+    def self.controller_path = "authify/sudo"
+  end
+end

@@ -1,9 +1,9 @@
 module Authify
-  class AccountSessionsController < ::ApplicationController
+  class AccountSessionsController < Authify::ApplicationController
     require_authentication
 
     def index
-      @sessions = current_user.authify_sessions.order(created_at: :desc)
+      @sessions = current_user.authify_sessions.order(created_at: :desc).limit(100)
     end
 
     def destroy
