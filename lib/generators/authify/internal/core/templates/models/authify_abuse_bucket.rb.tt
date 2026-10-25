@@ -17,9 +17,10 @@ class AuthifyAbuseBucket < ApplicationRecord
     identity = { kind: kind, action: kind, source_digest: key, account_digest: key, window_started_at: start }
     # The conditional upsert returns a row only when the increment is allowed.
     # Rejected attempts change neither the counter nor the fixed expiry time.
+    update_sql = sanitize_sql_array(['"count" = "authify_abuse_buckets"."count" + 1, "updated_at" = EXCLUDED."updated_at" WHERE "authify_abuse_buckets"."count" < ?', limit])
     result = upsert_all([identity.merge(count: 1, expires_at: start + seconds, created_at: now, updated_at: now)],
       unique_by: :index_authify_abuse_identity,
-      on_duplicate: Arel.sql(%("count" = "authify_abuse_buckets"."count" + 1, "updated_at" = EXCLUDED."updated_at" WHERE "authify_abuse_buckets"."count" < #{limit})),
+      on_duplicate: Arel.sql(update_sql),
       returning: %w[id])
     result.rows.any?
   end
