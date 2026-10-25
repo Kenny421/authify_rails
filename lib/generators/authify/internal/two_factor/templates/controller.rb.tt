@@ -6,7 +6,6 @@ module Authify
 
     def new
       @credential = current_user.authify_two_factor_credential
-      @recovery_codes = session.delete(:authify_new_recovery_codes)
       return if two_factor_enabled?(@credential)
 
       secret = ROTP::Base32.random_base32
@@ -18,56 +17,61 @@ module Authify
     end
 
     def create
-      credential = current_user.authify_two_factor_credential
-      return redirect_to(new_two_factor_path, alert: "Two-factor authentication is already enabled.") if two_factor_enabled?(credential)
       pending = session.delete(:authify_pending_totp_secret)&.with_indifferent_access
       return redirect_to(new_two_factor_path, alert: "Start setup again.") unless pending && pending[:started_at].to_i >= 5.minutes.ago.to_i
-      credential ||= AuthifyTwoFactorCredential.new(user: current_user)
-      credential.secret_ciphertext = pending[:secret]
-      timestep = ROTP::TOTP.new(credential.secret_ciphertext).verify(params[:code].to_s, drift_behind: 30, drift_ahead: 30)
-      if timestep
+      unless authify_sensitive_authentication(password: params[:password], allow_recent: false)
+        return redirect_to(new_two_factor_path, alert: "Confirm your current password before enabling two-factor authentication.")
+      end
+      current_user.with_lock do
+        raise Authify::StaleAuthentication unless Current.authify_session.reload.active?
+        credential = current_user.authify_two_factor_credential&.reload
+        return redirect_to(new_two_factor_path, alert: "Two-factor authentication is already enabled.") if two_factor_enabled?(credential)
+        credential ||= AuthifyTwoFactorCredential.new(user: current_user)
+        credential.secret_ciphertext = pending[:secret]
+        timestep = ROTP::TOTP.new(credential.secret_ciphertext).verify(params[:code].to_s, drift_behind: 30, drift_ahead: 30)
+        return redirect_to(new_two_factor_path, alert: "Code was incorrect.") unless timestep
         credential.last_accepted_at = timestep
         credential.confirmed_at = Time.current
         credential.disabled_at = nil
         credential.save!
-        session[:authify_new_recovery_codes] = credential.generate_recovery_codes!
+        @recovery_codes = credential.generate_recovery_codes!
+        current_user.authify_invalidate_credentials!
+        authify_rotate_proven_session!("password+factor")
         current_user.authentication_events.create!(event_type: "two_factor_enabled", ip_address: request.remote_ip, user_agent: request.user_agent)
-        redirect_to root_path, notice: "Two-factor authentication enabled."
-      else
-        redirect_to new_two_factor_path, alert: "Code was incorrect."
       end
+      response.headers["Cache-Control"] = "no-store"
+      render :new
     end
 
     def destroy
-      credential = current_user.authify_two_factor_credential
-      unless two_factor_enabled?(credential)
-        return redirect_to(new_two_factor_path, alert: "Two-factor authentication is not enabled.")
+      current_user.with_lock do
+        raise Authify::StaleAuthentication unless Current.authify_session.reload.active?
+        credential = current_user.authify_two_factor_credential
+        unless two_factor_enabled?(credential) && authify_sensitive_authentication(password: params[:password], allow_recent: false)
+          return redirect_to(new_two_factor_path, alert: "Password or verification code was incorrect, or too many attempts.")
+        end
+        credential.update!(disabled_at: Time.current, recovery_code_digests: [])
+        current_user.authify_invalidate_credentials!
+        authify_rotate_proven_session!("password+factor")
+        current_user.authentication_events.create!(event_type: "two_factor_disabled", ip_address: request.remote_ip, user_agent: request.user_agent)
       end
-
-      password_ok = current_user.authenticate(params[:password]).present?
-      code_ok = password_ok && (credential.verify?(params[:code]) || credential.consume_recovery_code!(params[:code]))
-      unless password_ok && code_ok
-        current_user.authentication_events.create!(event_type: "two_factor_disable_failed", ip_address: request.remote_ip, user_agent: request.user_agent)
-        return redirect_to(new_two_factor_path, alert: "Password or code was incorrect.")
-      end
-
-      credential.update!(disabled_at: Time.current, recovery_code_digests: [])
-      current_user.authentication_events.create!(event_type: "two_factor_disabled", ip_address: request.remote_ip, user_agent: request.user_agent)
       redirect_to root_path, notice: "Two-factor authentication disabled."
     end
 
     def recovery_codes
-      credential = current_user.authify_two_factor_credential
-      password_ok = current_user.authenticate(params[:password]).present?
-      code_ok = password_ok && two_factor_enabled?(credential) && credential.verify?(params[:code])
-      unless password_ok && code_ok
-        current_user.authentication_events.create!(event_type: "recovery_codes_regeneration_failed", ip_address: request.remote_ip, user_agent: request.user_agent)
-        return redirect_to(new_two_factor_path, alert: "Password or authenticator code was incorrect.")
+      current_user.with_lock do
+        raise Authify::StaleAuthentication unless Current.authify_session.reload.active?
+        credential = current_user.authify_two_factor_credential
+        unless two_factor_enabled?(credential) && authify_sensitive_authentication(password: params[:password], allow_recent: false)
+          return redirect_to(new_two_factor_path, alert: "Password or verification code was incorrect, or too many attempts.")
+        end
+        @recovery_codes = credential.generate_recovery_codes!
+        current_user.authify_invalidate_credentials!
+        authify_rotate_proven_session!("password+factor")
+        current_user.authentication_events.create!(event_type: "recovery_codes_regenerated", ip_address: request.remote_ip, user_agent: request.user_agent)
       end
-
-      session[:authify_new_recovery_codes] = credential.generate_recovery_codes!
-      current_user.authentication_events.create!(event_type: "recovery_codes_regenerated", ip_address: request.remote_ip, user_agent: request.user_agent)
-      redirect_to new_two_factor_path, notice: "New recovery codes generated. Previous codes no longer work."
+      response.headers["Cache-Control"] = "no-store"
+      render :new
     end
 
     private

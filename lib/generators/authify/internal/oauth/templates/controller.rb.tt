@@ -11,12 +11,7 @@ module Authify
 
       credential = active_two_factor_credential_for(user)
       if credential
-        session[:authify_pending_two_factor] = {
-          user_id: user.id,
-          remember: false,
-          authentication_method: "oauth:#{identity.provider}",
-          started_at: Time.current.to_i
-        }
+        authify_begin_factor_challenge(user, credential, remember: false, authentication_method: "oauth:#{identity.provider}")
         return redirect_to new_two_factor_challenge_path
       end
 
@@ -30,7 +25,7 @@ module Authify
         user_agent: request.user_agent,
         metadata: { provider: identity.provider }
       )
-      redirect_to return_to || Authify.configuration.after_sign_in_path
+      redirect_to authify_local_path(return_to, Authify.configuration.after_sign_in_path)
     rescue KeyError, ArgumentError, ActiveRecord::RecordInvalid => error
       Rails.logger.warn("Authify OAuth sign-in rejected: #{error.class}: #{error.message}")
       redirect_to new_session_path, alert: "Unable to sign in with that provider."

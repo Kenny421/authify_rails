@@ -32,13 +32,7 @@ module Authify
 
         credential = active_two_factor_credential_for(user)
         if credential
-          session[:authify_pending_two_factor] = {
-            user_id: user.id,
-            remember: params[:remember_me] == "1",
-            authentication_method: "password",
-            challenge_id: SecureRandom.urlsafe_base64(24),
-            started_at: Time.current.to_i
-          }
+          authify_begin_factor_challenge(user, credential, remember: params[:remember_me] == "1", authentication_method: "password")
           return redirect_to new_two_factor_challenge_path
         end
 
@@ -58,7 +52,7 @@ module Authify
 
     def destroy
       authify_end_session
-      redirect_to Authify.configuration.after_sign_out_path, notice: "Signed out."
+      redirect_to authify_local_path(Authify.configuration.after_sign_out_path), notice: "Signed out."
     end
 
     private
@@ -82,7 +76,7 @@ module Authify
           signed_in_at: Time.current
         ).new_sign_in.deliver_later
       end
-      redirect_to return_to || Authify.configuration.after_sign_in_path
+      redirect_to authify_local_path(return_to, Authify.configuration.after_sign_in_path)
     end
 
     def active_two_factor_credential_for(user)

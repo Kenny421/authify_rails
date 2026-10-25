@@ -62,4 +62,55 @@ class AuthifyConcurrencyTest < ActionDispatch::IntegrationTest
     AuthifyAbuseBucket.where(action: "counter_test", source_digest: digest).delete_all if digest
   end
 
+  test "an already verified old password cannot open a session after reset" do
+    user_class = Authify.configuration.user_class
+    barrier = Module.new do
+      def authenticate(password)
+        result = super
+        if (queues = Thread.current[:authify_password_barrier])
+          queues.first << true
+          queues.last.pop
+        end
+        result
+      end
+    end
+    user_class.prepend(barrier)
+    ready, release = Queue.new, Queue.new
+    token = @user.issue_password_reset!
+    login = Thread.new do
+      Thread.current[:authify_password_barrier] = [ready, release]
+      client = ActionDispatch::Integration::Session.new(Rails.application)
+      client.post "/sign-in", params: { email: @user.email, password: "correct-password-123" }
+      client.response.status
+    ensure
+      Thread.current[:authify_password_barrier] = nil
+    end
+    require "timeout"
+    Timeout.timeout(15) { ready.pop }
+    patch password_path(token), params: { user: { password: "replacement-password-456", password_confirmation: "replacement-password-456" } }
+    assert_redirected_to new_session_path
+    release << true
+    assert_equal 302, login.value
+    assert_empty @user.authify_sessions
+  ensure
+    release << true if release
+    login&.join(5)
+  end
+
+  test "account factor budget grants no more than its limit under contention" do
+    key = SecureRandom.hex(32)
+    now = Time.current
+    results = 16.times.map do
+      Thread.new do
+        ActiveRecord::Base.connection_pool.with_connection do
+          AuthifyAbuseBucket.consume_budget!(kind: "factor_account", key: key, now: now, limit: 10, window: 5.minutes)
+        end
+      end
+    end.map(&:value)
+    assert_equal 10, results.count(true)
+    assert_equal 10, AuthifyAbuseBucket.where(kind: "factor_account", source_digest: key).sum(:count)
+  ensure
+    AuthifyAbuseBucket.where(kind: "factor_account", source_digest: key).delete_all if key
+  end
+
 end

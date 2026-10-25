@@ -68,11 +68,25 @@ module Authify
       store_error(error)
     end
 
+    def factor_challenge_allowed?
+      @store.consume_budget!(kind: "factor_issuance", key: account, now: @clock.call, limit: 20, window: 5.minutes)
+    rescue ActiveRecord::ActiveRecordError => error
+      store_error(error)
+      false
+    end
+
+    def sensitive_attempt!
+      @store.consume_budget!(kind: "reauthenticate", key: account, now: @clock.call, limit: 10, window: 5.minutes)
+    rescue ActiveRecord::ActiveRecordError => error
+      store_error(error)
+      false
+    end
+
     def factor_attempt!(challenge:)
       now = @clock.call
       key = digest("factor", [account, challenge])
-      @store.bump!(kind: "source_request", action: "factor", source: key, account: key, now: now, lifetime: 5.minutes)
-      @store.source_requests(action: "factor", source: key, now: now, window: 5.minutes) <= 5
+      @store.consume_budget!(kind: "factor_account", key: account, now: now, limit: 10, window: 5.minutes) &&
+        @store.consume_budget!(kind: "factor_challenge", key: key, now: now, limit: 5, window: 5.minutes)
     rescue ActiveRecord::ActiveRecordError => error
       store_error(error)
       false

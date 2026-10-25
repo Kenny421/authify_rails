@@ -102,3 +102,37 @@ extend automatic account-wide lockouts; source/account cooldowns and additional
 verification protect the account instead. Existing locks and disabled-account
 checks remain authoritative. Review README.md for thresholds, proxy configuration,
 monitoring, cleanup and the custom challenge-provider contract.
+
+
+## Final 0.4.0 hardening revision
+
+Run the upgrade generator again even if the earlier 0.4.0 migrations are applied.
+`HardenAuthifyCredentials` adds the security-version/proof fields and the single-use
+`authify_sign_in_challenges` table. Existing browser sessions and API tokens start at
+version zero. Existing pending MFA cookies without a database challenge must sign
+in again. Coordinate migrations and worker replacement; all workers need the new
+schema and code together. Run `authify:prune_challenges` regularly.
+
+New MFA/sudo routes explicitly name their singular controllers. For older routes,
+the upgrade adds compatibility controllers without rewriting application routes.
+Retain those compatibility files until any older singular-resource routes have
+been reviewed. Sensitive forms now collect an authenticator/recovery code when MFA
+is enabled. Custom views/clients must add those fields and support the rotated
+`X-CSRF-Token` response header for JSON confirmation flows.
+
+Intentional security changes to review in staging:
+
+- Session recency alone no longer authorizes MFA/passkey enrollment or API-token creation.
+- Sudo and password/email changes require an existing second factor when enabled.
+- Password/email/factor changes invalidate API tokens as well as earlier sessions and pending sign-ins.
+- OAuth never links existing accounts by email. Generic provider verification flags
+  no longer count as verified email; Facebook onboarding needs an explicit reviewed flow.
+- MFA verification and sensitive confirmations have shared account budgets in all modes.
+- Recovery codes are shown once in the response, rather than kept in the session cookie.
+- Invalid manifests and incompatible security-column types stop the upgrade for review.
+
+Upgrade writes replace each file atomically and preserve permissions. If an
+application-file write fails, already-applied application-file writes are rolled
+back where the filesystem allows it; rollback failures identify the paths to
+restore from git. This is not a filesystem/database transaction. Keep the pre-upgrade
+commit and backup, and inspect the diff after any interrupted or failed generation.

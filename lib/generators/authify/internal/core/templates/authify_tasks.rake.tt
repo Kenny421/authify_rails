@@ -19,6 +19,8 @@ namespace :authify do
       "Sign-out route exists" => routes.include?("sign_out"),
       "Required authentication columns exist" => Authify::Schema::USER_COLUMNS.keys.all? { |column| user_class.column_names.include?(column.to_s) },
       "Pending email fields exist" => %w[pending_email email_change_token_digest email_change_sent_at].all? { |column| user_class.column_names.include?(column) },
+      "Session security fields exist" => %w[authify_security_version reauthenticated_at reauthentication_method].all? { |column| session_class.column_names.include?(column) },
+      "Single-use sign-in challenge table exists" => AuthifySignInChallenge.table_exists?,
       "Session authentication method exists" => session_class.column_names.include?("authentication_method"),
       "Remembered session field exists" => session_class.column_names.include?("remembered"),
       "Mailer is configured" => Authify.configuration.mailer_class < ActionMailer::Base,
@@ -51,6 +53,7 @@ namespace :authify do
 
     if manifest.feature?(:api)
       checks["API token model is available"] = defined?(AuthifyApiToken) && AuthifyApiToken.table_exists?
+      checks["API token security version exists"] = AuthifyApiToken.column_names.include?("authify_security_version") if checks["API token model is available"]
       checks["API authentication concern is available"] = defined?(Authify::ApiAuthentication).present?
     end
     if manifest.feature?(:passkeys)
@@ -90,6 +93,7 @@ namespace :authify do
 
   desc "Delete expired passkey challenges (schedule periodically)"
   task prune_challenges: :environment do
+    puts "Deleted #{AuthifySignInChallenge.where("expires_at < ?", Time.current).delete_all} expired sign-in challenges."
     if defined?(AuthifyPasskeyChallenge)
       puts "Deleted #{AuthifyPasskeyChallenge.where("expires_at < ?", Time.current).delete_all} expired passkey challenges."
     end

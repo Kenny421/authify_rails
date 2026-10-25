@@ -45,7 +45,7 @@ class GeneratorIntegrationTest < Minitest::Test
     assert_includes challenge_view, "Authenticator or recovery code"
     assert_includes email_changes_controller, "request_email_change!"
     assert_includes email_changes_controller, "email: user.pending_email"
-    assert_includes email_changes_controller, "recent_sudo_authentication?"
+    assert_includes email_changes_controller, "authify_sensitive_authentication"
     assert_includes email_changes_controller, "email_changed.deliver_later"
     assert_includes email_changes_view, "current email remains active"
     assert_includes email_changes_view, "Cancel email change"
@@ -109,9 +109,9 @@ class GeneratorIntegrationTest < Minitest::Test
     two_factor_controller = read_generated("app/controllers/authify/two_factor_controller.rb")
     two_factor_view = read_generated("app/views/authify/two_factor/new.html.erb")
 
-    assert_includes two_factor_controller, "password_ok = current_user.authenticate(params[:password]).present?"
-    assert_includes two_factor_controller, "credential.verify?(params[:code])"
-    assert_includes two_factor_controller, "event_type: \"two_factor_disable_failed\""
+    assert_includes two_factor_controller, "authify_sensitive_authentication(password: params[:password], allow_recent: false)"
+    assert_includes two_factor_controller, "current_user.authify_invalidate_credentials!"
+    assert_includes two_factor_controller, "event_type: \"two_factor_disabled\""
     assert_includes two_factor_controller, "generate_recovery_codes!"
     assert_includes two_factor_view, "method: :delete"
     assert_includes two_factor_view, "Disable two-factor"
@@ -124,10 +124,10 @@ class GeneratorIntegrationTest < Minitest::Test
 
     sudo_controller = read_generated("app/controllers/authify/sudo_controller.rb")
 
-    assert_includes sudo_controller, "MAX_SUDO_ATTEMPTS = 5"
-    assert_includes sudo_controller, "before_action :block_if_sudo_locked, only: :create"
-    assert_includes sudo_controller, "session[:authify_sudo_locked_until]"
-    assert_includes sudo_controller, "event_type: \"sudo_locked\""
+    assert_includes sudo_controller, "authify_sensitive_authentication"
+    assert_includes sudo_controller, "allow_recent: false"
+    assert_includes sudo_controller, "rate_limit to: 10"
+    assert_includes sudo_controller, "event_type: \"sudo_failed\""
   end
 
   def test_oauth_generator_writes_provider_agnostic_secure_sign_in

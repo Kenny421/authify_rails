@@ -96,7 +96,7 @@ class AuthifySecurityFlowsTest < ActionDispatch::IntegrationTest
 
   test "truncated verification tokens are rejected" do
     user = create_user(verified: false)
-    token = user.issue_email_verification!
+    token = user.instance_variable_get(:@authify_initial_verification_token)
 
     get email_verification_path(token.first(20))
 

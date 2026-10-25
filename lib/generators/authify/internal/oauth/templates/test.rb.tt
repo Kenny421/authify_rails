@@ -50,3 +50,24 @@ class AuthifyOauthSecurityTest < ActionDispatch::IntegrationTest
     )
   end
 end
+
+class AuthifyOauthSecurityTest
+  test "verified provider email cannot claim an existing local account" do
+    user = Authify.configuration.user_class.create!(email: "oauth-user@example.com", password: "correct-password-123")
+    oauth_callback(auth_hash)
+    assert_redirected_to new_session_path
+    assert_nil AuthifyOauthIdentity.find_by(user_id: user.id)
+    refute user.reload.email_verified?
+    assert_empty user.authify_sessions
+  end
+
+  test "generic verification and string claims are never treated as email proof" do
+    ["true", "false", nil].each_with_index do |value, index|
+      auth = auth_hash(email_verified: value, uid: "ambiguous-#{index}")
+      auth.extra.raw_info.verified = true
+      oauth_callback(auth)
+      assert_redirected_to new_session_path
+    end
+    assert_empty AuthifyOauthIdentity.all
+  end
+end

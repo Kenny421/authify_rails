@@ -3,16 +3,20 @@
 require "fileutils"
 require "yaml"
 require "time"
+require_relative "atomic_file"
 
 module Authify
   class InstallationManifest
+    class InvalidManifest < StandardError; end
     DEFAULT_PATH = "config/authify.yml"
 
     attr_reader :path
 
     def initialize(root:, path: DEFAULT_PATH)
-      @root = root
-      @path = File.join(root, path)
+      @root = File.realpath(root)
+      @relative_path = path
+      AtomicFile.validate!(@root, path)
+      @path = File.join(@root, path)
       @data = load_data
     end
 
@@ -68,14 +72,21 @@ module Authify
     def load_data
       return {} unless File.exist?(path)
 
-      YAML.safe_load_file(path, permitted_classes: [], aliases: false) || {}
-    rescue Psych::SyntaxError
-      {}
+      data = YAML.safe_load_file(path, permitted_classes: [], aliases: false)
+      valid = data.is_a?(Hash) && data.keys.all? { |key| key.is_a?(String) }
+      valid &&= !data.key?("features") || (data["features"].is_a?(Hash) && data["features"].all? { |key, value| key.is_a?(String) && [true, false].include?(value) })
+      valid &&= !data.key?("files") || (data["files"].is_a?(Hash) && data["files"].all? { |key, value| key.is_a?(String) && value.is_a?(String) })
+      valid &&= %w[version user_model views].all? { |key| !data.key?(key) || data[key].is_a?(String) }
+      valid &&= !data.key?("upgrade_history") || (data["upgrade_history"].is_a?(Array) && data["upgrade_history"].all? { |item| item.is_a?(Hash) })
+      raise InvalidManifest, "Invalid Authify manifest: #{path}. Restore or repair it before running generators." unless valid
+      data
+    rescue Psych::Exception => error
+      raise InvalidManifest, "Cannot read Authify manifest #{path}: #{error.message}"
     end
 
     def write!
-      FileUtils.mkdir_p(File.dirname(path))
-      File.write(path, YAML.dump(@data))
+      AtomicFile.validate!(@root, @relative_path)
+      AtomicFile.write(path, YAML.dump(@data))
     end
   end
 end

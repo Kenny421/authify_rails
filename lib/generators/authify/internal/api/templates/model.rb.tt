@@ -3,7 +3,11 @@ class AuthifyApiToken < ApplicationRecord
 
   def self.issue!(user:, name:, scopes: [], expires_at: nil)
     raw, digest = Authify::Token.generate
-    token = create!(user: user, name: name, scopes: scopes, expires_at: expires_at, token_prefix: raw.first(10), token_digest: digest)
+    version = user.authify_security_version
+    token = user.with_lock do
+      raise Authify::StaleAuthentication unless user.authify_security_version == version && user.disabled_at.nil?
+      create!(authify_security_version: version, user: user, name: name, scopes: scopes, expires_at: expires_at, token_prefix: raw.first(10), token_digest: digest)
+    end
     [token, "authify_live_#{raw}"]
   end
 
@@ -16,7 +20,7 @@ class AuthifyApiToken < ApplicationRecord
   def self.authenticate(bearer)
     return unless bearer.to_s.match?(/\Aauthify_live_[A-Za-z0-9_-]{43}\z/)
     raw = bearer.delete_prefix("authify_live_")
-    token = find_by(token_digest: Authify::Token.digest(raw))
+    token = includes(:user).find_by(token_digest: Authify::Token.digest(raw))
     return unless token&.active? && token.user.disabled_at.blank?
     return unless token.scopes.is_a?(Array) && (token.scopes - Array(Authify.configuration.api_scopes).map(&:to_s)).empty?
     return if Authify.configuration.email_verification_required && !token.user.email_verified?
@@ -25,6 +29,6 @@ class AuthifyApiToken < ApplicationRecord
   end
 
   def active?
-    revoked_at.nil? && (expires_at.nil? || expires_at.future?)
+    revoked_at.nil? && authify_security_version == user.authify_security_version && (expires_at.nil? || expires_at.future?)
   end
 end

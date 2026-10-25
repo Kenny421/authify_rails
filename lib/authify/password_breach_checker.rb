@@ -31,7 +31,7 @@ module Authify
       line = response.body.each_line.find { |entry| entry.start_with?("#{suffix}:") }
       count = line ? line.split(":", 2).last.to_i : 0
       Result.new(count.positive?, count, true)
-    rescue Timeout::Error, SocketError, SystemCallError, OpenSSL::SSL::SSLError
+    rescue Timeout::Error, SocketError, SystemCallError, IOError, Net::ProtocolError, OpenSSL::SSL::SSLError
       Result.new(false, 0, false)
     end
   end

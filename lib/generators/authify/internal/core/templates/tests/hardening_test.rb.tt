@@ -5,6 +5,7 @@ class AuthifyHardeningTest < ActionDispatch::IntegrationTest
     Authify.configuration.pwned_password_check = false
     Authify.configuration.email_notifications_enabled = false
     Authify.configuration.tenant_enabled = false
+    AuthifyAbuseBucket.delete_all
     Authify.configuration.user_class.destroy_all
     @user = Authify.configuration.user_class.create!(email: "secure@example.com", password: "correct-password-123", email_verified_at: Time.current)
   end
@@ -108,7 +109,7 @@ class AuthifyHardeningTest < ActionDispatch::IntegrationTest
     skip "Passkeys not installed" unless defined?(AuthifyPasskey)
     require "webauthn/fake_client"
     post session_path, params: { email: @user.email, password: "correct-password-123" }
-    post registration_options_passkeys_path, as: :json
+    post registration_options_passkeys_path, params: { current_password: "correct-password-123" }, as: :json
     assert_response :success
     client = WebAuthn::FakeClient.new("http://localhost:3000")
     credential = client.create(challenge: response.parsed_body.fetch("challenge"), user_verified: true)
@@ -129,7 +130,7 @@ class AuthifyHardeningTest < ActionDispatch::IntegrationTest
     skip "Passkeys not installed" unless defined?(AuthifyPasskey)
     require "webauthn/fake_client"
     post session_path, params: { email: @user.email, password: "correct-password-123" }
-    post registration_options_passkeys_path, as: :json
+    post registration_options_passkeys_path, params: { current_password: "correct-password-123" }, as: :json
     client = WebAuthn::FakeClient.new("http://localhost:3000")
     credential = client.create(challenge: response.parsed_body.fetch("challenge"), user_verified: false)
     post passkeys_path, params: { credential: credential }, as: :json
@@ -169,5 +170,262 @@ if defined?(Authify::ApiAuthentication)
         assert_equal 401, client.response.status
       end
     end
+  end
+end
+
+class AuthifyHardeningTest
+  test "blank password reset preserves the password and usable reset link" do
+    raw = @user.issue_password_reset!
+    digest = @user.password_digest
+    patch password_path(raw), params: { user: { password: "", password_confirmation: "" } }
+    assert_response :unprocessable_entity
+    assert_equal digest, @user.reload.password_digest
+    assert @user.password_reset_token_valid?(raw)
+  end
+
+  test "repeat reset and verification requests preserve the first valid link" do
+    raw = @user.issue_password_reset!
+    assert_nil @user.issue_password_reset!
+    assert @user.reload.password_reset_token_valid?(raw)
+    verification = @user.issue_email_verification!
+    assert_nil @user.issue_email_verification!
+    assert Authify::Token.matches?(verification, @user.reload.email_verification_token_digest)
+    travel 61.seconds do
+      replacement = @user.issue_password_reset!
+      assert replacement
+      refute @user.reload.password_reset_token_valid?(raw)
+    end
+  end
+
+  test "password reset invalidates API tokens permanently" do
+    skip "API not installed" unless defined?(AuthifyApiToken)
+    _record, bearer = AuthifyApiToken.issue!(user: @user, name: "Existing client")
+    assert AuthifyApiToken.authenticate(bearer)
+    token = @user.issue_password_reset!
+    patch password_path(token), params: { user: { password: "replacement-password-456", password_confirmation: "replacement-password-456" } }
+    assert_redirected_to new_session_path
+    assert_nil AuthifyApiToken.authenticate(bearer)
+  end
+
+  test "pending MFA cannot finish after a password reset" do
+    credential = audit_enable_mfa
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    assert_redirected_to new_two_factor_challenge_path
+    raw = @user.issue_password_reset!
+    outsider = ActionDispatch::Integration::Session.new(Rails.application)
+    outsider.patch password_path(raw), params: { user: { password: "replacement-password-456", password_confirmation: "replacement-password-456" } }
+    post two_factor_challenge_path, params: { code: ROTP::TOTP.new(credential.secret_ciphertext).now }
+    assert_redirected_to new_session_path
+    assert_empty @user.authify_sessions
+  end
+
+  test "replaying a consumed MFA cookie never opens another session" do
+    credential = audit_enable_mfa
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    captured = cookies.instance_variable_get(:@cookies).to_h { |cookie| [cookie.name, cookie.value] }
+    post two_factor_challenge_path, params: { code: ROTP::TOTP.new(credential.secret_ciphertext).now }
+    assert_redirected_to Authify.configuration.after_sign_in_path
+    attacker = ActionDispatch::Integration::Session.new(Rails.application)
+    captured.each { |key, value| attacker.cookies[key] = value }
+    travel 61.seconds do
+      attacker.post two_factor_challenge_path, params: { code: ROTP::TOTP.new(credential.secret_ciphertext).now }
+      assert_equal new_session_path, URI.parse(attacker.response.location).path
+      assert_equal 1, @user.authify_sessions.count
+    end
+  end
+
+  test "new MFA challenges cannot reset the account guess budget" do
+    audit_enable_mfa
+    # Distribute the attempts over new challenges and IPs. Default observe mode
+    # must still enforce the intrinsic OTP guess limit.
+    previous_limit = Authify.configuration.maximum_login_attempts
+    Authify.configuration.maximum_login_attempts = 100
+    10.times do |index|
+      client = ActionDispatch::Integration::Session.new(Rails.application)
+      client.post session_path, params: { email: @user.email, password: "correct-password-123" }, headers: { "REMOTE_ADDR" => "198.51.100.#{index + 1}" }
+      client.post two_factor_challenge_path, params: { code: "invalid" }
+    end
+    assert_equal 10, AuthifyAbuseBucket.where(kind: "factor_account").sum(:count)
+    credential = @user.authify_two_factor_credential
+    post session_path, params: { email: @user.email, password: "correct-password-123" }, headers: { "REMOTE_ADDR" => "203.0.113.1" }
+    post two_factor_challenge_path, params: { code: ROTP::TOTP.new(credential.secret_ciphertext).now }
+    assert_redirected_to new_session_path
+    assert_equal 0, @user.authify_sessions.count
+  ensure
+    Authify.configuration.maximum_login_attempts = previous_limit if previous_limit
+  end
+
+  test "a new browser session alone cannot enroll a passkey" do
+    skip "Passkeys not installed" unless defined?(AuthifyPasskey)
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    captured = cookies.instance_variable_get(:@cookies).to_h { |cookie| [cookie.name, cookie.value] }
+    old = @user.authify_sessions.last
+    post registration_options_passkeys_path, as: :json
+    assert_response :forbidden
+    post registration_options_passkeys_path, params: { current_password: "correct-password-123" }, as: :json
+    assert_response :success
+    assert old.reload.revoked_at
+    attacker = ActionDispatch::Integration::Session.new(Rails.application)
+    captured.each { |key, value| attacker.cookies[key] = value }
+    attacker.post registration_options_passkeys_path, as: :json
+    assert_equal 302, attacker.response.status
+    assert_equal new_session_path, URI.parse(attacker.response.location).path
+  end
+
+  test "existing passkey can confirm management without a password" do
+    skip "Passkeys not installed" unless defined?(AuthifyPasskey)
+    client = audit_register_passkey
+    delete sign_out_path
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    post registration_options_passkeys_path, as: :json
+    assert_response :forbidden
+    post authentication_options_passkeys_path, params: { purpose: "reauthentication" }, as: :json
+    assert_response :success
+    assertion = client.get(challenge: response.parsed_body.fetch("challenge"), user_verified: true)
+    post authenticate_passkeys_path, params: { purpose: "reauthentication", credential: assertion }, as: :json
+    assert_response :success
+    post registration_options_passkeys_path, as: :json
+    assert_response :success
+  end
+
+  test "new passkey registration invalidates another outstanding login ceremony" do
+    skip "Passkeys not installed" unless defined?(AuthifyPasskey)
+    client = audit_register_passkey
+    outsider = ActionDispatch::Integration::Session.new(Rails.application)
+    outsider.post authentication_options_passkeys_path, params: { email: @user.email }, as: :json
+    assertion = client.get(challenge: outsider.response.parsed_body.fetch("challenge"), user_verified: true)
+    post registration_options_passkeys_path, as: :json
+    replacement = WebAuthn::FakeClient.new("http://localhost:3000").create(challenge: response.parsed_body.fetch("challenge"), user_verified: true)
+    post passkeys_path, params: { credential: replacement }, as: :json
+    assert_response :created
+    outsider.post authenticate_passkeys_path, params: { credential: assertion }, as: :json
+    assert_equal 422, outsider.response.status
+  end
+
+  test "MFA enrollment requires password and recovery codes are shown only once" do
+    skip "2FA not installed" unless defined?(AuthifyTwoFactorCredential)
+    ActiveRecord::Encryption.configure(primary_key: "a" * 32, deterministic_key: "b" * 32, key_derivation_salt: "c" * 32)
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    get new_two_factor_path
+    # The provisioning URI in the generated QR is intentionally shown only to
+    # the signed-in browser; use the view's pending session secret for this test.
+    secret = request.session[:authify_pending_totp_secret]["secret"] || request.session[:authify_pending_totp_secret][:secret]
+    post two_factor_path, params: { code: ROTP::TOTP.new(secret).now }
+    assert_redirected_to new_two_factor_path
+    assert_nil @user.reload.authify_two_factor_credential
+    get new_two_factor_path
+    data = request.session[:authify_pending_totp_secret]
+    secret = data["secret"] || data[:secret]
+    post two_factor_path, params: { password: "correct-password-123", code: ROTP::TOTP.new(secret).now }
+    assert_response :success
+    assert_includes response.body, "Save these recovery codes now"
+    assert_nil request.session[:authify_new_recovery_codes]
+    assert_equal "no-store", response.headers["Cache-Control"]
+    get new_two_factor_path
+    refute_includes response.body, "Save these recovery codes now"
+  end
+
+  test "API token creation requires fresh identity proof" do
+    skip "API not installed" unless defined?(AuthifyApiToken)
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    post "/api/authify_tokens", params: { name: "Reader" }, as: :json
+    assert_response :forbidden
+    post "/api/authify_tokens", params: { name: "Reader", current_password: "correct-password-123" }, as: :json
+    assert_response :created
+    assert_equal "no-store", response.headers["Cache-Control"]
+  end
+
+  test "return destinations are restricted to local paths" do
+    controller = Authify::SessionsController.new
+    assert_equal "/account/sessions?tab=all", controller.send(:authify_local_path, "/account/sessions?tab=all")
+    ["//evil.example", "/\\evil.example", "https://evil.example", "/\nevil", "javascript:alert(1)"].each do |path|
+      assert_equal "/", controller.send(:authify_local_path, path, "//evil.example")
+    end
+  end
+
+  private
+
+  def audit_enable_mfa
+    skip "2FA not installed" unless defined?(AuthifyTwoFactorCredential)
+    ActiveRecord::Encryption.configure(primary_key: "a" * 32, deterministic_key: "b" * 32, key_derivation_salt: "c" * 32)
+    AuthifyTwoFactorCredential.build_for(@user).tap { |record| record.confirmed_at = Time.current; record.save! }
+  end
+
+  def audit_register_passkey
+    require "webauthn/fake_client"
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    post registration_options_passkeys_path, params: { current_password: "correct-password-123" }, as: :json
+    assert_response :success
+    client = WebAuthn::FakeClient.new("http://localhost:3000")
+    credential = client.create(challenge: response.parsed_body.fetch("challenge"), user_verified: true)
+    post passkeys_path, params: { credential: credential }, as: :json
+    assert_response :created
+    client
+  end
+end
+
+class AuthifyHardeningTest
+  test "sudo settings resolve the generated controller and rotate old sessions" do
+    skip "Sudo not installed" unless defined?(Authify::SudoController)
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    old = @user.authify_sessions.last
+    get new_sudo_path
+    assert_response :success
+    post sudo_path, params: { password: "correct-password-123" }
+    assert_response :redirect
+    assert old.reload.revoked_at
+    assert @user.authify_sessions.last.sudo_expires_at.future?
+  end
+
+  test "sudo guess limits cannot be reset by replaying an old session cookie" do
+    skip "Sudo not installed" unless defined?(Authify::SudoController)
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    captured = cookies.instance_variable_get(:@cookies).to_h { |cookie| [cookie.name, cookie.value] }
+    10.times do |index|
+      client = ActionDispatch::Integration::Session.new(Rails.application)
+      captured.each { |key, value| client.cookies[key] = value }
+      client.post sudo_path, params: { password: "wrong-password" }, headers: { "REMOTE_ADDR" => "198.51.100.#{index + 1}" }
+    end
+    post sudo_path, params: { password: "correct-password-123" }, headers: { "REMOTE_ADDR" => "203.0.113.1" }
+    assert_redirected_to new_sudo_path
+    assert_nil @user.authify_sessions.last.sudo_expires_at
+  end
+
+  test "database abuse snapshot computes all signals in one query" do
+    now = Time.current
+    [["a", "b"], ["a", "b"], ["a", "c"], ["d", "b"]].each do |source, account|
+      AuthifyAbuseBucket.bump!(kind: "failure", action: "snapshot", source: source, account: account, now: now, lifetime: 10.minutes)
+    end
+    queries = []
+    callback = ->(_name, _start, _finish, _id, payload) { queries << payload[:sql] unless payload[:name] == "SCHEMA" }
+    stats = nil
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
+      stats = AuthifyAbuseBucket.snapshot(action: "snapshot", source: "a", account: "b", now: now, window: 10.minutes)
+    end
+    assert_equal 1, queries.length
+    assert_equal 3, stats[:source_failures]
+    assert_equal 3, stats[:account_failures]
+    assert_equal 2, stats[:pair_failures]
+    assert_equal 2, stats[:distinct_accounts]
+    assert_in_delta now.to_f, stats[:last_failure_at].to_f, 0.001
+  end
+
+  test "passkey registration continues with the rotated CSRF token" do
+    skip "Passkeys not installed" unless defined?(AuthifyPasskey)
+    previous = ActionController::Base.allow_forgery_protection
+    ActionController::Base.allow_forgery_protection = true
+    get new_session_path
+    csrf = Nokogiri::HTML(response.body).at_css('meta[name="csrf-token"]')["content"]
+    post session_path, params: { email: @user.email, password: "correct-password-123" }, headers: { "X-CSRF-Token" => csrf }
+    csrf = response.headers.fetch("X-CSRF-Token")
+    post registration_options_passkeys_path, params: { current_password: "correct-password-123" }, headers: { "X-CSRF-Token" => csrf }, as: :json
+    assert_response :success
+    rotated = response.headers.fetch("X-CSRF-Token")
+    require "webauthn/fake_client"
+    credential = WebAuthn::FakeClient.new("http://localhost:3000").create(challenge: response.parsed_body.fetch("challenge"), user_verified: true)
+    post passkeys_path, params: { credential: credential }, headers: { "X-CSRF-Token" => rotated }, as: :json
+    assert_response :created
+  ensure
+    ActionController::Base.allow_forgery_protection = previous unless previous.nil?
   end
 end

@@ -16,9 +16,9 @@ module Authify
     def files
       map = {}
       core = "internal/core/templates"
-      %w[authentication current_session abuse_guard].each { |n| map["app/controllers/concerns/authify/#{n}.rb"] = "#{core}/#{n}.rb.tt" }
+      %w[authentication current_session abuse_guard sensitive_authentication].each { |n| map["app/controllers/concerns/authify/#{n}.rb"] = "#{core}/#{n}.rb.tt" }
       %w[authenticatable secure_password].each { |n| map["app/models/concerns/authify/#{n}.rb"] = "#{core}/concerns/#{n}.rb.tt" }
-      %w[authify_session authentication_event authify_abuse_bucket].each { |n| map["app/models/#{n}.rb"] = "#{core}/models/#{n}.rb.tt" }
+      %w[authify_session authentication_event authify_abuse_bucket authify_sign_in_challenge].each { |n| map["app/models/#{n}.rb"] = "#{core}/models/#{n}.rb.tt" }
       %w[application sessions two_factor_challenges registrations passwords password_changes email_verifications email_changes account_sessions].each do |n|
         map["app/controllers/authify/#{n}_controller.rb"] = "#{core}/controllers/#{n}_controller.rb.tt"
       end
@@ -45,8 +45,8 @@ module Authify
       end
       feature_files = {
         api: { "model.rb.tt" => "app/models/authify_api_token.rb", "controller.rb.tt" => "app/controllers/api/authify_tokens_controller.rb", "authentication.rb.tt" => "app/controllers/concerns/authify/api_authentication.rb" },
-        two_factor: { "model.rb.tt" => "app/models/authify_two_factor_credential.rb", "controller.rb.tt" => "app/controllers/authify/two_factor_controller.rb", "view.html.erb.tt" => "app/views/authify/two_factor/new.html.erb" },
-        sudo: { "concern.rb.tt" => "app/controllers/concerns/authify/sudo.rb", "controller.rb.tt" => "app/controllers/authify/sudo_controller.rb", "view.html.erb.tt" => "app/views/authify/sudo/new.html.erb" },
+        two_factor: { "compatibility_controller.rb.tt" => "app/controllers/authify/two_factors_controller.rb", "model.rb.tt" => "app/models/authify_two_factor_credential.rb", "controller.rb.tt" => "app/controllers/authify/two_factor_controller.rb", "view.html.erb.tt" => "app/views/authify/two_factor/new.html.erb" },
+        sudo: { "compatibility_controller.rb.tt" => "app/controllers/authify/sudos_controller.rb", "concern.rb.tt" => "app/controllers/concerns/authify/sudo.rb", "controller.rb.tt" => "app/controllers/authify/sudo_controller.rb", "view.html.erb.tt" => "app/views/authify/sudo/new.html.erb" },
         oauth: { "model.rb.tt" => "app/models/authify_oauth_identity.rb", "controller.rb.tt" => "app/controllers/authify/oauth_callbacks_controller.rb", "test.rb.tt" => "test/integration/authify_oauth_security_test.rb", "buttons.html.erb.tt" => "app/views/authify/shared/_oauth_buttons.html.erb" },
         roles: { "role.rb.tt" => "app/models/authify_role.rb", "assignment.rb.tt" => "app/models/authify_role_assignment.rb" },
         multi_tenant: { "initializer.rb.tt" => "config/initializers/authify_tenant.rb" },

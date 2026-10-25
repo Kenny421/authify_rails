@@ -43,6 +43,8 @@ module Authify
         migration_template "compatibility_migration.rb.tt", "db/migrate/upgrade_authify_040_security_fields.rb" unless migration_path
         abuse_migration = Dir[File.join(destination_root, "db/migrate/*_add_authify_abuse_protection.rb")].first
         migration_template "abuse_migration.rb.tt", "db/migrate/add_authify_abuse_protection.rb" unless abuse_migration
+        security_migration = Dir[File.join(destination_root, "db/migrate/*_harden_authify_credentials.rb")].first
+        migration_template "security_migration.rb.tt", "db/migrate/harden_authify_credentials.rb" unless security_migration
         manifest.record_upgrade!(files: candidates) unless manifest.version == Authify::VERSION && manifest.baselines == candidates
         say "Review git diff, run bin/rails db:migrate, bin/rails authify:doctor and your application tests before deployment."
       end

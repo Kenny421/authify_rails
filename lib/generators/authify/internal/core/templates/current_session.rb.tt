@@ -5,8 +5,12 @@ module Authify
     def authify_resume_session
       raw = cookies.encrypted[:authify_session]
       return if raw.blank?
-      record = Authify.configuration.session_class.find_by(token_digest: Authify::Token.digest(raw))
-      return authify_clear_cookie unless record&.active?
+      record = Authify.configuration.session_class.includes(:user).find_by(token_digest: Authify::Token.digest(raw))
+      unless record&.active?
+        record.revoke! if record && record.revoked_at.nil?
+        authify_clear_cookie
+        return
+      end
       if Authify.configuration.tenant_enabled && !Authify.user_scope.where(id: record.user_id).exists?
         authify_clear_cookie
         Current.user = Current.authify_session = nil
@@ -15,7 +19,7 @@ module Authify
       if record.user.disabled_at.present? || (Authify.configuration.email_verification_required && !record.user.email_verified?)
         record.revoke!
         authify_clear_cookie
-        Current.reset
+        Current.user = Current.authify_session = nil
         return
       end
 
@@ -24,23 +28,29 @@ module Authify
       record.update_column(:last_active_at, Time.current) if record.last_active_at < 5.minutes.ago
     end
 
-    def authify_start_session(user, remember: false, authentication_method: "password")
+    def authify_start_session(user, remember: false, authentication_method: "password", expected_version: user.authify_security_version)
       raw, digest = Authify::Token.generate
       duration = remember ? Authify.configuration.remember_me_duration : Authify.configuration.session_absolute_timeout
-      record = user.authify_sessions.create!(
-        token_digest: digest,
-        ip_address: request.remote_ip,
-        user_agent: request.user_agent.to_s.first(500),
-        authentication_method: authentication_method,
-        remembered: remember,
-        last_active_at: Time.current,
-        expires_at: duration.from_now
-      )
+      record = user.with_lock do
+        eligible = user.disabled_at.blank? && !user.locked? && (!Authify.configuration.email_verification_required || user.email_verified?)
+        raise Authify::StaleAuthentication unless eligible && user.authify_security_version == expected_version
+        user.authify_sessions.create!(
+          authify_security_version: expected_version,
+          token_digest: digest,
+          ip_address: request.remote_ip,
+          user_agent: request.user_agent.to_s.first(500),
+          authentication_method: authentication_method,
+          remembered: remember,
+          last_active_at: Time.current,
+          expires_at: duration.from_now
+        )
+      end
       cookies.encrypted[:authify_session] = {
         value: raw, httponly: true, secure: Rails.env.production?, same_site: :lax,
         expires: (remember ? duration.from_now : nil)
       }.compact
       reset_session
+      response.headers["X-CSRF-Token"] = form_authenticity_token
       Current.user = user
       Current.authify_session = record
       if Authify.configuration.abuse_mode.to_sym != :off

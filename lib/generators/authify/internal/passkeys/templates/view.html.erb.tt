@@ -1,5 +1,11 @@
 <h1>Passkeys</h1>
-<p>Manage passkeys after a recent sign-in. Your device verifies your fingerprint, face, or PIN.</p>
+<p>Confirm your identity before adding or removing passkeys.</p>
+<label for="authify-current-password">Current password</label>
+<input type="password" id="authify-current-password" autocomplete="current-password">
+<label for="authify-current-code">Authenticator or recovery code (if enabled)</label>
+<input id="authify-current-code" autocomplete="one-time-code">
+<button type="button" id="authify-confirm-passkey">Confirm with an existing passkey</button>
+<button type="button" id="authify-confirm-password">Confirm with password</button>
 <ul>
 <%% current_user.authify_passkeys.each do |passkey| %>
   <li><%%= passkey.name %> <%%= button_to "Remove", passkey_path(passkey), method: :delete %></li>

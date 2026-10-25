@@ -3,6 +3,7 @@ module Authify
     extend ActiveSupport::Concern
 
     included do
+      has_many :authify_sign_in_challenges, foreign_key: :user_id, dependent: :destroy
       has_many :authify_sessions, foreign_key: :user_id, dependent: :destroy
       has_many :authentication_events, foreign_key: :user_id, dependent: :destroy
       normalizes :email, with: ->(value) { value.to_s.strip.downcase }
@@ -14,6 +15,7 @@ module Authify
       validate :authify_pending_email_available
 
       before_create :authify_prepare_email_verification
+      around_update :authify_serialize_security_change
     end
 
     def email_verified?
@@ -40,9 +42,12 @@ module Authify
     end
 
     def issue_password_reset!
-      raw, digest = Authify::Token.generate
-      update!(password_reset_token_digest: digest, password_reset_sent_at: Time.current)
-      raw
+      with_lock do
+        return if password_reset_sent_at && password_reset_sent_at >= 60.seconds.ago
+        raw, digest = Authify::Token.generate
+        update!(password_reset_token_digest: digest, password_reset_sent_at: Time.current)
+        raw
+      end
     end
 
     def password_reset_token_valid?(raw)
@@ -52,9 +57,20 @@ module Authify
     end
 
     def issue_email_verification!
-      raw, digest = Authify::Token.generate
-      update!(email_verification_token_digest: digest, email_verification_sent_at: Time.current)
-      raw
+      with_lock do
+        return if email_verification_sent_at && email_verification_sent_at >= 60.seconds.ago
+        raw, digest = Authify::Token.generate
+        update!(email_verification_token_digest: digest, email_verification_sent_at: Time.current)
+        raw
+      end
+    end
+
+    # Call under the user lock after changing an enrolled authentication factor.
+    def authify_invalidate_credentials!
+      with_lock do
+        update!(authify_security_version: authify_security_version + 1)
+        authify_sessions.where(revoked_at: nil).update_all(revoked_at: Time.current)
+      end
     end
 
     def request_email_change!(new_email)
@@ -94,6 +110,21 @@ module Authify
 
     private
 
+    # Serialize credential changes with sign-in completion. A pending first factor,
+    # session or API token from an earlier version can never become valid again.
+    def authify_serialize_security_change
+      sensitive = %w[password_digest email email_verified_at disabled_at]
+      if sensitive.any? { |name| will_save_change_to_attribute?(name) }
+        self.class.transaction do
+          locked = self.class.lock.find(id)
+          self.authify_security_version = locked.authify_security_version + 1
+          yield
+        end
+      else
+        yield
+      end
+    end
+
     def authify_tenant_email_available
       key = Authify.configuration.tenant_key
       errors.add(key, "is required") if self[key].blank?
@@ -118,7 +149,7 @@ module Authify
     end
 
     def authify_prepare_email_verification
-      return unless Authify.configuration.email_verification_required
+      return unless Authify.configuration.email_verification_required && !email_verified?
       raw, digest = Authify::Token.generate
       self.email_verification_token_digest = digest
       self.email_verification_sent_at = Time.current

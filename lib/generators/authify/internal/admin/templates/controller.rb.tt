@@ -1,6 +1,6 @@
 module Authify
   module Admin
-    class AuthenticationEventsController < ::ApplicationController
+    class AuthenticationEventsController < Authify::ApplicationController
       require_authentication
       before_action :require_authify_admin
       def index

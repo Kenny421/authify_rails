@@ -17,16 +17,17 @@ class AuthifyOauthIdentity < ApplicationRecord
       raise ArgumentError, "The provider has not verified this email address." unless verified_email?(auth)
 
       user = Authify.user_scope.find_by("LOWER(email) = ?", email)
-      user ||= Authify.user_scope.create!(
+      raise ArgumentError, "Sign in to the existing account to link a provider." if user
+      user = Authify.user_scope.create!(
         email: email,
         password_digest: BCrypt::Password.create(SecureRandom.base58(48)),
         email_verified_at: Time.current
       )
-      user.update_column(:email_verified_at, Time.current) unless user.email_verified?
       create!(user: user, provider: auth.provider, uid: auth.uid, email: email)
     end
   rescue ActiveRecord::RecordNotUnique
-    identity = find_by!(provider: auth.provider, uid: auth.uid)
+    identity = find_by(provider: auth.provider, uid: auth.uid)
+    raise ArgumentError, "Account creation conflicted. Please sign in again." unless identity
     raise ArgumentError, "Identity belongs to another tenant." unless Authify.user_scope.where(id: identity.user_id).exists?
     identity
   end
@@ -34,8 +35,7 @@ class AuthifyOauthIdentity < ApplicationRecord
   def self.verified_email?(auth)
     raw = auth.extra&.raw_info
     value = raw.respond_to?(:email_verified) ? raw.email_verified : nil
-    value = raw.verified if value.nil? && raw.respond_to?(:verified)
-    value == true || value.to_s == "true"
+    value == true
   end
   private_class_method :verified_email?
 end

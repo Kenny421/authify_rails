@@ -1,5 +1,6 @@
 module Authify
   class ApplicationController < ::ApplicationController
     allow_unauthenticated_access
+    before_action { response.headers["Cache-Control"] = "no-store" }
   end
 end

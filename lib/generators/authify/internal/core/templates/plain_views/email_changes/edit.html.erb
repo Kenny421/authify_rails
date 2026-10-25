@@ -8,6 +8,7 @@
 
   <%= form_with model: @user, url: account_email_path, method: :patch do |form| %>
     <%= form.email_field :email, value: @user.pending_email, required: true, autocomplete: "email", placeholder: "New email address" %>
+    <%= text_field_tag :code, nil, autocomplete: "one-time-code", placeholder: "Authenticator or recovery code (if enabled)" %>
     <%= password_field_tag :current_password, nil, autocomplete: "current-password", placeholder: "Current password (not needed after recent sudo verification)" %>
     <%= form.submit "Send verification" %>
   <% end %>
@@ -17,7 +18,8 @@
       <p>Pending address: <strong><%= @user.pending_email %></strong></p>
       <p>Requested <%= time_ago_in_words(@user.email_change_sent_at) %> ago.</p>
       <%= form_with url: account_email_path, method: :delete do %>
-        <%= password_field_tag :current_password, nil, autocomplete: "current-password", placeholder: "Current password (not needed after recent sudo verification)" %>
+        <%= text_field_tag :code, nil, autocomplete: "one-time-code", placeholder: "Authenticator or recovery code (if enabled)" %>
+    <%= password_field_tag :current_password, nil, autocomplete: "current-password", placeholder: "Current password (not needed after recent sudo verification)" %>
         <%= submit_tag "Cancel email change" %>
       <% end %>
     </div>

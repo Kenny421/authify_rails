@@ -59,4 +59,39 @@ class UpgradePlanTest < Minitest::Test
       end
     end
   end
+  def test_failed_write_rolls_back_applied_files_and_preserves_permissions
+    with_app do |root|
+      first = File.join(root, "app/first.rb")
+      File.write(first, "original")
+      File.chmod(0o600, first)
+      plan = Authify::UpgradePlan.new(root: root, candidates: { "app/first.rb" => "changed", "app/second.rb" => "new" }, baselines: { "app/first.rb" => "original" })
+      original_write = Authify::AtomicFile.method(:write)
+      writer = ->(path, content, **options) do
+        raise Errno::ENOSPC if path.end_with?("second.rb")
+        original_write.call(path, content, **options)
+      end
+      begin
+        Authify::AtomicFile.define_singleton_method(:write, writer)
+        assert_raises(Errno::ENOSPC) { plan.apply! }
+      ensure
+        Authify::AtomicFile.define_singleton_method(:write, original_write)
+      end
+      assert_equal "original", File.read(first)
+      assert_equal 0o600, File.stat(first).mode & 0o777
+      refute File.exist?(File.join(root, "app/second.rb"))
+    end
+  end
+
+  def test_preflight_rejects_directory_target_and_file_parent_before_any_writes
+    with_app do |root|
+      File.write(File.join(root, "app/blocker"), "kept")
+      ["app", "app/blocker/child.rb"].each do |target|
+        assert_raises(ArgumentError) do
+          Authify::UpgradePlan.new(root: root, candidates: { "app/first.rb" => "new", target => "bad" })
+        end
+        refute File.exist?(File.join(root, "app/first.rb"))
+      end
+    end
+  end
+
 end

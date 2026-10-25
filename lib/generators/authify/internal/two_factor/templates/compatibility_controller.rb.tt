@@ -1,0 +1,6 @@
+# Compatibility for applications generated before explicit singular routes.
+module Authify
+  class TwoFactorsController < TwoFactorController
+    def self.controller_path = "authify/two_factor"
+  end
+end

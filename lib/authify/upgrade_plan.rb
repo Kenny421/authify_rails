@@ -3,6 +3,7 @@ require "digest"
 require "fileutils"
 require "open3"
 require "tmpdir"
+require_relative "atomic_file"
 
 module Authify
   class UpgradePlan
@@ -43,12 +44,28 @@ module Authify
         current = File.file?(full) ? File.read(full) : nil
         raise "Application changed during upgrade: #{e.path}; rerun preview." unless current == e.original
       end
-      entries.each do |e|
-        next if e.status == :unchanged
-        validate_path!(e.path)
-        path = File.join(@root, e.path)
-        FileUtils.mkdir_p(File.dirname(path))
-        File.write(path, e.content)
+      applied = []
+      begin
+        entries.each do |e|
+          next if e.status == :unchanged
+          validate_path!(e.path)
+          path = File.join(@root, e.path)
+          mode = File.exist?(path) ? File.stat(path).mode & 0o777 : nil
+          AtomicFile.write(path, e.content)
+          applied << [e, mode]
+        end
+      rescue StandardError => error
+        rollback_errors = []
+        applied.reverse_each do |entry, mode|
+          path = File.join(@root, entry.path)
+          begin
+            entry.original.nil? ? File.delete(path) : AtomicFile.write(path, entry.original, mode: mode)
+          rescue StandardError => rollback_error
+            rollback_errors << "#{entry.path}: #{rollback_error.class}"
+          end
+        end
+        raise "Authify upgrade failed (#{error.class}: #{error.message}); restore these files from git: #{rollback_errors.join(', ')}" unless rollback_errors.empty?
+        raise
       end
     end
 
@@ -58,19 +75,14 @@ module Authify
         validate_path!(path)
         full = File.join(@root, path)
         FileUtils.mkdir_p(File.dirname(full))
-        File.write(full, e.content)
+        AtomicFile.write(full, e.content)
       end
     end
 
     private
 
     def validate_path!(path)
-      raise ArgumentError, "Unsafe upgrade path" if path.start_with?("/") || path.split("/").include?("..")
-      cursor = @root
-      path.split("/").each do |part|
-        cursor = File.join(cursor, part)
-        raise ArgumentError, "Refusing symlink: #{path}" if File.symlink?(cursor)
-      end
+      AtomicFile.validate!(@root, path)
     end
 
     def merge(current, baseline, desired)

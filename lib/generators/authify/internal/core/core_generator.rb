@@ -33,7 +33,7 @@ module Authify
         end
 
         def create_models
-          %w[authify_session authentication_event authify_abuse_bucket].each do |name|
+          %w[authify_session authentication_event authify_abuse_bucket authify_sign_in_challenge].each do |name|
             template "models/#{name}.rb.tt", "app/models/#{name}.rb"
           end
           empty_directory "app/models/concerns/authify"
@@ -53,6 +53,7 @@ module Authify
           end
           template "authentication.rb.tt", "app/controllers/concerns/authify/authentication.rb"
           template "abuse_guard.rb.tt", "app/controllers/concerns/authify/abuse_guard.rb"
+          template "sensitive_authentication.rb.tt", "app/controllers/concerns/authify/sensitive_authentication.rb"
           template "current_session.rb.tt", "app/controllers/concerns/authify/current_session.rb"
         end
 

@@ -14,7 +14,7 @@ module Authify
       user = Authify.user_scope.find_by(email: params[:email].to_s.strip.downcase)
       if user && !user.email_verified?
         token = user.issue_email_verification!
-        Authify.configuration.mailer_class.with(user: user, token: token).email_verification.deliver_later
+        Authify.configuration.mailer_class.with(user: user, token: token).email_verification.deliver_later if token
       end
       redirect_to new_email_verification_path, notice: "If the account exists, verification instructions have been sent."
     end
@@ -25,8 +25,13 @@ module Authify
         Authify::Token.matches?(params[:token], user.email_verification_token_digest)
       return redirect_to(new_session_path, alert: "Verification link is invalid or expired.") unless user
 
-      user.update!(email_verified_at: Time.current, email_verification_token_digest: nil, email_verification_sent_at: nil)
-      user.authentication_events.create!(event_type: "email_verified")
+      user.with_lock do
+        valid = user.email_verification_sent_at && user.email_verification_sent_at >= Authify.configuration.email_verification_ttl.ago &&
+          Authify::Token.matches?(params[:token], user.email_verification_token_digest)
+        return redirect_to(new_session_path, alert: "Verification link is invalid or expired.") unless valid
+        user.update!(email_verified_at: Time.current, email_verification_token_digest: nil, email_verification_sent_at: nil)
+        user.authentication_events.create!(event_type: "email_verified")
+      end
       if Authify.configuration.email_notifications_enabled
         Authify.configuration.mailer_class.with(user: user).welcome.deliver_later
       end

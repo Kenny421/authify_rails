@@ -55,5 +55,6 @@ class CreateAuthifyCore < ActiveRecord::Migration[8.0]
     add_index :authentication_events, :event_type
     require "authify/schema"
     Authify::Schema.ensure_abuse!(self)
+    Authify::Schema.ensure_security!(self, :<%= options[:user_model].underscore.pluralize %>)
   end
 end

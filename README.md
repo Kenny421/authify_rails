@@ -575,7 +575,7 @@ bin/rails generate authify:install --api
 bin/rails db:migrate
 ```
 
-Raw tokens are returned only when created. The database stores the token digest. Add application-specific scopes and authorization rules before exposing protected API endpoints.
+HTTP token creation requires `current_password` plus `code` when MFA is enabled, or a recent explicit identity confirmation. Password resets, password/email changes and factor changes invalidate previously issued tokens. Raw tokens are returned only when created. The database stores the token digest. Add application-specific scopes and authorization rules before exposing protected API endpoints.
 
 ## Roles and administration
 
@@ -637,7 +637,7 @@ Before production deployment:
 - Configure mail delivery and URL options
 - Review every generated migration
 - Apply database uniqueness indexes
-- Keep OAuth authorization on POST requests and require verified provider emails before account linking
+- Keep OAuth authorization on POST requests; review verified-email claims and existing provider identity links
 - Add rate limiting at the application or edge layer
 - Add authorization policies beyond authentication
 - Protect sensitive actions with sudo mode
@@ -646,7 +646,7 @@ Before production deployment:
 - Keep Rails and Authify updated
 - Use a shared production Rails cache store so controller rate limits are enforced consistently across processes
 
-Email changes require the current password or an unexpired Authify sudo session. The current address remains active until the new address is confirmed. Authify rate-limits requests and confirmations, notifies the old address when a change is requested, notifies both addresses after confirmation, supports cancellation, and revokes all sessions after the address changes.
+Email changes require explicit recent identity confirmation, or the current password plus an enrolled authenticator/recovery code. The current address remains active until the new address is confirmed. Authify rate-limits requests and confirmations, notifies the old address when a change is requested, notifies both addresses after confirmation, supports cancellation, and revokes all sessions after the address changes.
 
 Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
@@ -717,7 +717,12 @@ Production has no permissive defaults. Use a current browser supporting
 `PublicKeyCredential.parseCreationOptionsFromJSON`,
 `parseRequestOptionsFromJSON` and credential `toJSON()`; HTTPS is required except
 for localhost. The generator adds a passkey sign-in button and `/passkeys` settings.
-Enrollment/deletion requires a recent authenticated session or active sudo state.
+Enrollment/deletion requires an explicit recent identity confirmation: current
+password plus an enrolled authenticator/recovery code, or a fresh assertion from
+an existing passkey. A newly created login session alone does not grant this
+permission. The settings page supports both confirmation methods. Confirmation
+rotates the session; JSON clients must replace their CSRF token with the
+`X-CSRF-Token` response header, as the generated browser script does.
 WebAuthn verifies origin, RP ID, signature, user verification and counters;
 database-backed challenges expire after five minutes and are consumed once even
 for authenticators whose counter is zero. These are passwordless passkeys with
@@ -832,8 +837,14 @@ In enforcement mode:
 - A previously verified browser can reduce soft challenges caused by distributed
   or shared-IP attacks. Its opaque encrypted cookie is never sufficient to sign
   in and cannot bypass repeated failures against its own source/account pair.
-- Five MFA submissions are allowed per primary-authentication challenge across IP
-  changes. Starting another challenge still requires the primary credential.
+- MFA allows five submissions per primary-authentication challenge and ten per
+  account in a fixed five-minute window across IPs and newly minted challenges.
+  At most twenty challenges can be issued per account in that window. Explicit
+  sensitive-action confirmations allow ten submissions per account per five-minute
+  window. These intrinsic verification limits apply in every adaptive mode and
+  fail closed if shared storage is unavailable. Rejected requests do not extend
+  the fixed window. Accounts under an active attack may need to wait until the
+  next window or use an available passkey/recovery path.
 - Successful password changes, resets and email changes invalidate the affected
   account's trusted-browser evidence. Failed attacks do not revoke existing sessions.
 - The source request hard budget protects application resources and can still
@@ -876,3 +887,31 @@ Schedule `bin/rails authify:prune_abuse` periodically (for example hourly throug
 Solid Queue recurring tasks). There is no Redis requirement. The generated abuse
 initializer adds sensitive challenge/credential fields to Rails parameter filtering.
 Existing application authentication-event retention remains application-owned.
+
+
+### Credential changes and OAuth identities
+
+Password, email, verification and disabled-state changes advance a database-backed
+security version. MFA/passkey changes do the same. Earlier browser sessions,
+API tokens and unfinished MFA/passkey sign-ins cannot regain validity. Factor
+management rotates the verified current session and invalidates other sessions
+and API tokens; recreate affected API integrations after such changes. Use model
+`update!`/the generated management flows for security changes: raw SQL,
+`update_columns` and bulk updates bypass Rails security callbacks. Custom factor
+management must call `user.authify_invalidate_credentials!` under the user lock.
+
+New OAuth identities require an explicit boolean `email_verified: true` from the
+trusted provider. A generic account `verified` flag or string value is insufficient.
+An existing account is never linked automatically by matching email, including an
+unverified local account. Already-linked identities can still sign in. Authenticated
+provider linking is not implemented; do not bypass these checks to add it. Providers
+that do not supply an explicit verified-email claim, including typical Facebook
+responses, need a separately reviewed email-verification/linking flow before new
+registrations can be accepted. Review identities created by earlier automatic
+email-linking code during rollout.
+
+Password-reset and verification resends have an atomic sixty-second cooldown;
+repeat requests retain the first usable link. Recovery codes appear once in the
+successful response, with `Cache-Control: no-store`, and are never put in cookies.
+The session settings page shows the most recent 100 records. Expired records still
+need an application retention policy and scheduled cleanup.

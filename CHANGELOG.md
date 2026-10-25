@@ -2,6 +2,17 @@
 
 ## 0.4.0 - Unreleased
 
+- Bound browser/API credentials and pending MFA/passkey ceremonies to security
+  versions; serialized sign-in completion with password reset and factor changes.
+- Added single-use database MFA challenges and atomic per-account verification
+  budgets across sessions/IPs; rotated explicit identity proofs for sensitive actions.
+- Removed automatic OAuth email linking and ambiguous email-verification claims.
+- Added one-time recovery-code responses, reset/resend cooldowns, CSRF renewal,
+  local-only return paths, and singular-resource route compatibility.
+- Reduced abuse-counter writes to atomic upserts and signal aggregation to one query.
+- Added atomic file replacement, failed-write recovery, manifest validation and
+  additional replay, concurrency, enrollment and real-CSRF regression coverage.
+
 - Added observe/enforce adaptive authentication protection with shared database
   counters, keyed identifiers, spraying/distributed attack detection, trusted-browser
   evidence, bounded pair cooldowns, and a source resource budget.

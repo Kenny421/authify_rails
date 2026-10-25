@@ -15,6 +15,7 @@ require_relative "authify/turnstile_verifier"
 
 module Authify
   class Error < StandardError; end
+  class StaleAuthentication < Error; end
 
   class << self
     attr_writer :configuration
