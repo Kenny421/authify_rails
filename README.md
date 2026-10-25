@@ -633,6 +633,7 @@ The upgrade generator previews template changes, preserves non-overlapping custo
 
 Before production deployment:
 
+- Use a maintained Ruby release (Ruby 3.4 or newer is recommended); Ruby 3.2 compatibility tests do not make that end-of-life runtime suitable for production
 - Use HTTPS and enable `config.force_ssl`
 - Configure mail delivery and URL options
 - Review every generated migration

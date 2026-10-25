@@ -429,3 +429,25 @@ class AuthifyHardeningTest
     ActionController::Base.allow_forgery_protection = previous unless previous.nil?
   end
 end
+
+class AuthifyHardeningTest
+  test "malformed WebAuthn payloads are rejected without an application error" do
+    skip "Passkeys not installed" unless defined?(AuthifyPasskey)
+    require "webauthn/fake_client"
+    require "base64"
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    mutations = [
+      ->(data) { data["id"] = "different-id" },
+      ->(data) { data["response"]["attestationObject"] = Base64.urlsafe_encode64("\xff".b) },
+      ->(data) { data["response"]["clientDataJSON"] = Base64.urlsafe_encode64("invalid-json") }
+    ]
+    mutations.each do |mutate|
+      post registration_options_passkeys_path, params: { current_password: "correct-password-123" }, as: :json
+      credential = WebAuthn::FakeClient.new("http://localhost:3000").create(challenge: response.parsed_body.fetch("challenge"), user_verified: true)
+      mutate.call(credential)
+      post passkeys_path, params: { credential: credential }, as: :json
+      assert_response :unprocessable_entity
+    end
+    assert_empty @user.authify_passkeys
+  end
+end
