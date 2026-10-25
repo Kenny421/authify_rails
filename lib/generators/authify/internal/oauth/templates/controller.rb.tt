@@ -1,0 +1,56 @@
+module Authify
+  class OauthCallbacksController < ApplicationController
+    rate_limit to: 20, within: 5.minutes, only: %i[create failure],
+               with: -> { redirect_to new_session_path, alert: "Too many provider sign-in attempts. Try again later." }
+    skip_before_action :require_authentication, only: %i[create failure], raise: false
+
+    def create
+      identity = AuthifyOauthIdentity.from_omniauth!(request.env.fetch("omniauth.auth"))
+      user = identity.user
+      return reject_sign_in if user.disabled_at.present? || user.locked?
+
+      credential = active_two_factor_credential_for(user)
+      if credential
+        session[:authify_pending_two_factor] = {
+          user_id: user.id,
+          remember: false,
+          authentication_method: "oauth:#{identity.provider}",
+          started_at: Time.current.to_i
+        }
+        return redirect_to new_two_factor_challenge_path
+      end
+
+      user.clear_failed_logins!
+      user.update_column(:last_signed_in_at, Time.current)
+      return_to = session[:authify_return_to]
+      authify_start_session(user, authentication_method: "oauth:#{identity.provider}")
+      user.authentication_events.create!(
+        event_type: "oauth_sign_in_succeeded",
+        ip_address: request.remote_ip,
+        user_agent: request.user_agent,
+        metadata: { provider: identity.provider }
+      )
+      redirect_to return_to || Authify.configuration.after_sign_in_path
+    rescue KeyError, ArgumentError, ActiveRecord::RecordInvalid => error
+      Rails.logger.warn("Authify OAuth sign-in rejected: #{error.class}: #{error.message}")
+      redirect_to new_session_path, alert: "Unable to sign in with that provider."
+    end
+
+    def failure
+      redirect_to new_session_path, alert: "Unable to sign in with that provider."
+    end
+
+    private
+
+    def active_two_factor_credential_for(user)
+      return unless user.respond_to?(:authify_two_factor_credential)
+
+      credential = user.authify_two_factor_credential
+      credential if credential&.confirmed_at.present? && credential.disabled_at.blank?
+    end
+
+    def reject_sign_in
+      redirect_to new_session_path, alert: "Unable to sign in with that provider."
+    end
+  end
+end

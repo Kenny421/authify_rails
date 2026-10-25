@@ -1,0 +1,70 @@
+module Authify
+  class TwoFactorController < ApplicationController
+    require_authentication
+    rate_limit to: 10, within: 10.minutes, only: %i[create destroy recovery_codes],
+               with: -> { redirect_to new_two_factor_path, alert: "Too many two-factor attempts. Try again later." }
+
+    def new
+      @credential = current_user.authify_two_factor_credential
+      @recovery_codes = session.delete(:authify_new_recovery_codes)
+      return if two_factor_enabled?(@credential)
+
+      @credential ||= AuthifyTwoFactorCredential.build_for(current_user)
+      session[:authify_pending_totp_secret] = @credential.secret_ciphertext
+      @provisioning_uri = ROTP::TOTP.new(@credential.secret_ciphertext, issuer: Rails.application.class.module_parent_name).provisioning_uri(current_user.email)
+      @qr_svg = RQRCode::QRCode.new(@provisioning_uri).as_svg(module_size: 4).html_safe
+    end
+
+    def create
+      credential = current_user.authify_two_factor_credential || AuthifyTwoFactorCredential.new(user: current_user, secret_ciphertext: session.delete(:authify_pending_totp_secret))
+      if credential.verify?(params[:code])
+        credential.confirmed_at = Time.current
+        credential.disabled_at = nil
+        credential.save!
+        session[:authify_new_recovery_codes] = credential.generate_recovery_codes!
+        current_user.authentication_events.create!(event_type: "two_factor_enabled", ip_address: request.remote_ip, user_agent: request.user_agent)
+        redirect_to root_path, notice: "Two-factor authentication enabled."
+      else
+        redirect_to new_two_factor_path, alert: "Code was incorrect."
+      end
+    end
+
+    def destroy
+      credential = current_user.authify_two_factor_credential
+      unless two_factor_enabled?(credential)
+        return redirect_to(new_two_factor_path, alert: "Two-factor authentication is not enabled.")
+      end
+
+      password_ok = current_user.authenticate(params[:password]).present?
+      code_ok = credential.verify?(params[:code]) || credential.consume_recovery_code!(params[:code])
+      unless password_ok && code_ok
+        current_user.authentication_events.create!(event_type: "two_factor_disable_failed", ip_address: request.remote_ip, user_agent: request.user_agent)
+        return redirect_to(new_two_factor_path, alert: "Password or code was incorrect.")
+      end
+
+      credential.update!(disabled_at: Time.current, recovery_code_digests: [])
+      current_user.authentication_events.create!(event_type: "two_factor_disabled", ip_address: request.remote_ip, user_agent: request.user_agent)
+      redirect_to root_path, notice: "Two-factor authentication disabled."
+    end
+
+    def recovery_codes
+      credential = current_user.authify_two_factor_credential
+      password_ok = current_user.authenticate(params[:password]).present?
+      code_ok = two_factor_enabled?(credential) && credential.verify?(params[:code])
+      unless password_ok && code_ok
+        current_user.authentication_events.create!(event_type: "recovery_codes_regeneration_failed", ip_address: request.remote_ip, user_agent: request.user_agent)
+        return redirect_to(new_two_factor_path, alert: "Password or authenticator code was incorrect.")
+      end
+
+      session[:authify_new_recovery_codes] = credential.generate_recovery_codes!
+      current_user.authentication_events.create!(event_type: "recovery_codes_regenerated", ip_address: request.remote_ip, user_agent: request.user_agent)
+      redirect_to new_two_factor_path, notice: "New recovery codes generated. Previous codes no longer work."
+    end
+
+    private
+
+    def two_factor_enabled?(credential)
+      credential&.confirmed_at.present? && credential.disabled_at.blank?
+    end
+  end
+end

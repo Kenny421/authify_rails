@@ -1,0 +1,5 @@
+<div class="mt-6 space-y-3">
+  <p class="text-center text-sm text-gray-500">Or continue with</p>
+  <%%= button_to "Google", "/auth/google_oauth2", method: :post, data: { turbo: false }, class: "w-full rounded border p-3" %>
+  <%%= button_to "Facebook", "/auth/facebook", method: :post, data: { turbo: false }, class: "w-full rounded border p-3" %>
+</div>

@@ -1,0 +1,5 @@
+Email address changed
+
+The email for your account changed from <%%= @previous_email %> to <%%= @user.email %>.
+
+All existing sessions were signed out. If you did not make this change, contact support immediately.

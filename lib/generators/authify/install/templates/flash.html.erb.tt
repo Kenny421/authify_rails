@@ -1,0 +1,9 @@
+<%% if flash.any? %>
+  <div class="fixed inset-x-0 top-4 z-50 mx-auto max-w-xl space-y-2 px-4" aria-live="polite" aria-atomic="true">
+    <%% flash.each do |type, message| %>
+      <div class="rounded-lg border px-4 py-3 shadow <%%= type.to_s == "alert" ? "border-red-200 bg-red-50 text-red-800" : "border-green-200 bg-green-50 text-green-800" %>" role="<%%= type.to_s == "alert" ? "alert" : "status" %>">
+        <%%= message %>
+      </div>
+    <%% end %>
+  </div>
+<%% end %>

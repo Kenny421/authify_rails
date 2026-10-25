@@ -1,0 +1,13 @@
+class CreateAuthifyOauthIdentities < ActiveRecord::Migration[8.0]
+  def change
+    create_table :authify_oauth_identities do |t|
+      t.references :user, null: false, foreign_key: { to_table: :<%= options[:user_model].underscore.pluralize %> }
+      t.string :provider, null: false
+      t.string :uid, null: false
+      t.string :email
+      t.timestamps
+    end
+
+    add_index :authify_oauth_identities, %i[provider uid], unique: true
+  end
+end

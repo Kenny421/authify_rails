@@ -1,0 +1,7 @@
+Confirm your new email address
+
+Confirm <%%= @new_email %> as the new email address for your account:
+
+<%%= @action_url %>
+
+Your current email remains unchanged until you use this link. The link expires in <%%= distance_of_time_in_words(Authify.configuration.email_verification_ttl) %>.

@@ -1,0 +1,12 @@
+class AuthenticationEvent < ApplicationRecord
+  SUCCESSFUL_SIGN_IN_TYPES = %w[sign_in_succeeded oauth_sign_in_succeeded].freeze
+
+  belongs_to :user, class_name: Authify.configuration.user_class_name, optional: true
+
+  def self.unique_sign_in_for?(user:, ip_address:, user_agent:)
+    prior_sign_ins = user.authentication_events.where(event_type: SUCCESSFUL_SIGN_IN_TYPES)
+
+    !prior_sign_ins.where(ip_address: ip_address).exists? &&
+      !prior_sign_ins.where(user_agent: user_agent).exists?
+  end
+end

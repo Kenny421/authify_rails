@@ -1,0 +1,36 @@
+class AuthifyOauthIdentity < ApplicationRecord
+  belongs_to :user, class_name: "<%= options[:user_model] %>"
+
+  validates :provider, :uid, presence: true
+  validates :uid, uniqueness: { scope: :provider }
+
+  def self.from_omniauth!(auth)
+    transaction do
+      identity = lock.find_by(provider: auth.provider, uid: auth.uid)
+      return identity if identity
+
+      email = auth.info.email.to_s.strip.downcase
+      raise ArgumentError, "The provider did not return an email address." if email.blank?
+      raise ArgumentError, "The provider has not verified this email address." unless verified_email?(auth)
+
+      user = Authify.configuration.user_class.find_by("LOWER(email) = ?", email)
+      user ||= Authify.configuration.user_class.create!(
+        email: email,
+        password_digest: BCrypt::Password.create(SecureRandom.base58(48)),
+        email_verified_at: Time.current
+      )
+      user.update_column(:email_verified_at, Time.current) unless user.email_verified?
+      create!(user: user, provider: auth.provider, uid: auth.uid, email: email)
+    end
+  rescue ActiveRecord::RecordNotUnique
+    find_by!(provider: auth.provider, uid: auth.uid)
+  end
+
+  def self.verified_email?(auth)
+    raw = auth.extra&.raw_info
+    value = raw.respond_to?(:email_verified) ? raw.email_verified : nil
+    value = raw.verified if value.nil? && raw.respond_to?(:verified)
+    value == true || value.to_s == "true"
+  end
+  private_class_method :verified_email?
+end

@@ -1,0 +1,33 @@
+module Authify
+  class EmailVerificationsController < ApplicationController
+    rate_limit to: 5, within: 1.hour, only: :create,
+               with: -> { redirect_to new_email_verification_path, alert: "Too many verification requests. Try again later." }
+    rate_limit to: 10, within: 10.minutes, only: :show,
+               with: -> { redirect_to new_session_path, alert: "Too many verification attempts. Try again later." }
+
+    def new; end
+
+    def create
+      user = Authify.configuration.user_class.find_by(email: params[:email].to_s.strip.downcase)
+      if user && !user.email_verified?
+        token = user.issue_email_verification!
+        Authify.configuration.mailer_class.with(user: user, token: token).email_verification.deliver_later
+      end
+      redirect_to new_email_verification_path, notice: "If the account exists, verification instructions have been sent."
+    end
+
+    def show
+      user = Authify.configuration.user_class.find_by(email_verification_token_digest: Authify::Token.digest(params[:token]))
+      user = nil unless user&.email_verification_sent_at&.>= Authify.configuration.email_verification_ttl.ago &&
+        Authify::Token.matches?(params[:token], user.email_verification_token_digest)
+      return redirect_to(new_session_path, alert: "Verification link is invalid or expired.") unless user
+
+      user.update!(email_verified_at: Time.current, email_verification_token_digest: nil, email_verification_sent_at: nil)
+      user.authentication_events.create!(event_type: "email_verified")
+      if Authify.configuration.email_notifications_enabled
+        Authify.configuration.mailer_class.with(user: user).welcome.deliver_later
+      end
+      redirect_to new_session_path, notice: "Email verified. You may now sign in."
+    end
+  end
+end

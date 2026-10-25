@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.2", "3.3", "3.4"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - run: bundle exec rake test
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+      - run: gem install bundler-audit
+      - run: bundle audit check --update
+
+  generated-app:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite3, postgresql]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: authify_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      AUTHIFY_GEM_PATH: ${{ github.workspace }}
+      DATABASE_URL: ${{ matrix.database == 'postgresql' && 'postgres://postgres:postgres@localhost:5432/authify_test' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+      - name: Generate Rails application
+        run: |
+          bundle exec rails new /tmp/authify_app --skip-git --skip-bundle --database=${{ matrix.database }}
+          printf '\ngem "authify_rails", path: ENV.fetch("AUTHIFY_GEM_PATH")\n' >> /tmp/authify_app/Gemfile
+          cd /tmp/authify_app
+          bundle install
+          bin/rails generate authify:install --all
+          RAILS_ENV=test bin/rails db:prepare
+      - name: Run generated security tests
+        working-directory: /tmp/authify_app
+        run: bin/rails test test/integration/authify_security_flows_test.rb test/integration/authify_oauth_security_test.rb
+      - name: Scan generated application
+        working-directory: /tmp/authify_app
+        run: bundle exec brakeman --no-pager --quiet

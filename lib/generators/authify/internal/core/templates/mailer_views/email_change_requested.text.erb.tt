@@ -1,0 +1,5 @@
+Email change requested
+
+A request was made to change your account email to <%%= @new_email %>.
+
+Your current email remains active. If you did not make this request, sign in to cancel it and secure your account.

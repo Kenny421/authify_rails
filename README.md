@@ -1,0 +1,651 @@
+# Authify Rails
+
+Authify Rails installs secure, editable authentication into a Rails 8 application with one generator. The default installation provides a complete browser-authentication foundation, while optional features can be added together during the first install or later by rerunning the same generator.
+
+> Status: pre-1.0. Review generated code and test it in your application before production use.
+
+## What Authify installs
+
+The basic command installs:
+
+- User registration
+- Email and password sign-in
+- A staged two-factor sign-in challenge shown only to users with active 2FA
+- Sign-out and remember-me sessions
+- Password reset with single-use digested tokens
+- Authenticated password changes with current-password confirmation and global session revocation
+- Email verification
+- Verification enforcement that blocks sign-in and revokes sessions until the email is verified
+- Safe email changes that remain pending until the new address is verified
+- Sensitive email-change confirmation, rate limits, cancellation, security notifications, and session revocation
+- Database-backed session and device management
+- Idle and absolute session expiration
+- Session revocation
+- Login failure tracking and temporary account lockout
+- Authentication event logging
+- `bcrypt` password hashing through `has_secure_password`
+- Pwned Passwords checking through the k-anonymity range API
+- Editable mailers and views
+- Accessible notice and alert rendering in the application layout
+- A starter `HomeController#index` page and root route when the app does not already have them
+- Tailwind-ready responsive pages
+- `authify:doctor` and `authify:version` tasks
+- An installation manifest at `config/authify.yml`
+
+Optional features:
+
+- `--oauth` — Google and Facebook sign-in, with support for other OmniAuth providers
+- `--roles` — simple role assignments
+- `--two-factor` — TOTP authenticator-app enrollment with single-use recovery codes
+- `--api` — personal API tokens with digested storage
+- `--sudo` — step-up authentication for sensitive actions
+- `--admin` — authentication-event administration page; requires roles
+- `--multi-tenant` — a tenant-scoping concern to adapt to the application
+- `--all` — all optional features
+
+## Requirements
+
+- Ruby 3.2 or newer
+- Rails 8.0 or newer
+- Active Record
+- A Rails application using cookies for browser sessions
+
+Authify currently targets Rails 8 migrations. Confirm compatibility before using it with another Rails version.
+
+## Installation
+
+Add the gem:
+
+```ruby
+gem "authify_rails"
+```
+
+For local development:
+
+```ruby
+gem "authify_rails", path: "../authify_rails"
+```
+
+Then run:
+
+```bash
+bundle install
+bin/rails generate authify:install
+bin/rails db:migrate
+bin/rails authify:doctor
+```
+
+The default installation adds `bcrypt` to the host application's Gemfile and runs `bundle install`. Use `--skip-bundle` when dependency installation is managed separately.
+
+### Google and Facebook sign-in
+
+Install OAuth support at initial setup or add it later:
+
+```bash
+bin/rails generate authify:install --oauth
+bin/rails db:migrate
+```
+
+The generator installs OmniAuth, its Rails CSRF protection, and the Google and Facebook strategies. Set these environment variables:
+
+```text
+GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET
+FACEBOOK_APP_ID
+FACEBOOK_APP_SECRET
+```
+
+Register these callback URLs with the providers, replacing the host with your application's HTTPS origin:
+
+```text
+https://example.com/auth/google_oauth2/callback
+https://example.com/auth/facebook/callback
+```
+
+Authify creates an `AuthifyOauthIdentity` for each provider account. A returning user is found by provider and provider UID. A new identity is linked to an existing email account, or creates an account, only when the provider reports that the email is verified. Provider authorization starts with POST requests protected by `omniauth-rails_csrf_protection`.
+
+To add GitHub, Microsoft, or another provider, add its OmniAuth strategy gem and a `provider` entry in `config/initializers/authify_oauth.rb`. The generated callback and identity model are provider-agnostic; providers that do not expose verification in `extra.raw_info.email_verified` or `extra.raw_info.verified` need an application-specific verification rule.
+
+## Recommended rollout
+
+For most browser-first Rails applications, use this sequence:
+
+1. Start with core plus two-factor and sudo mode:
+
+```bash
+bin/rails generate authify:install --two-factor --sudo
+bin/rails db:migrate
+bin/rails authify:doctor
+```
+
+2. Add roles only when authorization tiers are real product needs:
+
+```bash
+bin/rails generate authify:install --roles
+bin/rails db:migrate
+```
+
+3. Add admin after roles are present (`--admin` requires role support):
+
+```bash
+bin/rails generate authify:install --admin
+bin/rails db:migrate
+```
+
+4. Add API tokens only for applications that expose token-based access:
+
+```bash
+bin/rails generate authify:install --api
+bin/rails db:migrate
+```
+
+5. Add multi-tenant support only when the application already uses tenant-scoped data:
+
+```bash
+bin/rails generate authify:install --multi-tenant
+```
+
+After enabling `--multi-tenant`, wire tenant associations and add tenant indexes manually to match the data model.
+
+## Production readiness checklist
+
+Before going live, complete the following in the host Rails app:
+
+1. Run install, migrate, and doctor:
+
+```bash
+bin/rails generate authify:install --two-factor --sudo
+bin/rails db:migrate
+bin/rails authify:doctor
+```
+
+2. Enforce transport security in production:
+
+```ruby
+# config/environments/production.rb
+config.force_ssl = true
+```
+
+3. Configure mailer host and sender for security links and alerts:
+
+```ruby
+# config/environments/production.rb
+config.action_mailer.default_url_options = { host: "app.example.com" }
+```
+
+```ruby
+# config/initializers/authify.rb
+Authify.configure do |config|
+  config.mailer_from = "security@app.example.com"
+  config.support_email = "support@app.example.com"
+end
+```
+
+4. Keep security notifications enabled unless there is a strong reason not to:
+
+```ruby
+config.email_notifications_enabled = true
+config.new_sign_in_notifications = true
+config.password_change_notifications = true
+```
+
+5. If two-factor is enabled, verify login and disable flows in staging:
+
+- Sign-in should require password plus authenticator code for users with active 2FA.
+- Disabling 2FA should require current password plus authenticator code.
+
+6. Verify lockout and session controls:
+
+- Repeated failed sign-in attempts trigger account lockout.
+- Sudo challenge applies temporary lockout after repeated failures.
+- Revoking sessions from account sessions view signs devices out.
+
+7. Ensure your deployment process runs app tests and `bin/rails authify:doctor` on every release.
+
+## Installing multiple features
+
+Flags can be combined in a single command:
+
+```bash
+bin/rails generate authify:install \
+  --roles \
+  --two-factor \
+  --api \
+  --sudo \
+  --admin
+```
+
+Install every optional feature:
+
+```bash
+bin/rails generate authify:install --all
+```
+
+`--admin` requires role management, so use it with `--roles` unless roles are already installed.
+
+## Adding features later
+
+The installer is designed to be rerun. Authify reads `config/authify.yml`, skips features already installed, and generates only missing requested features.
+
+Start with the basics:
+
+```bash
+bin/rails generate authify:install
+```
+
+Add sudo mode and roles later:
+
+```bash
+bin/rails generate authify:install --sudo --roles
+bin/rails db:migrate
+```
+
+Add API tokens later:
+
+```bash
+bin/rails generate authify:install --api
+bin/rails db:migrate
+```
+
+Do not delete `config/authify.yml`; it records the installed Authify version, user model, view style, and enabled features.
+
+## Generator options
+
+```text
+--user-model=User
+--views=tailwind|plain|none
+--oauth
+--roles
+--two-factor
+--api
+--sudo
+--admin
+--multi-tenant
+--all
+--skip-bundle
+```
+
+Custom user model example:
+
+```bash
+bin/rails generate authify:install --user-model=Account
+```
+
+When the model already exists, Authify injects its authentication concerns rather than replacing the model file. Review the generated migration carefully because an existing table may need missing authentication columns added manually.
+
+For a new application, the installer creates `HomeController#index`, its view, and `root "home#index"`. Existing home files and existing root routes are preserved.
+
+## Generated routes
+
+The core installer adds routes equivalent to:
+
+```ruby
+scope module: :authify do
+  get "/sign-in", to: "sessions#new", as: :new_session
+  post "/sign-in", to: "sessions#create", as: :session
+  delete "/sign-out", to: "sessions#destroy", as: :sign_out
+  get "/sign-up", to: "registrations#new", as: :new_registration
+  post "/sign-up", to: "registrations#create", as: :registration
+  get "/forgot-password", to: "passwords#new", as: :new_password
+  post "/forgot-password", to: "passwords#create", as: :passwords
+  get "/reset-password/:token", to: "passwords#edit", as: :edit_password
+  patch "/reset-password/:token", to: "passwords#update", as: :password
+end
+```
+
+Typical paths:
+
+```text
+/sign-in
+/sign-up
+/sign-out
+/forgot-password
+/reset-password/:token
+/account/password
+/verify-email
+/account/sessions
+```
+
+Optional generators append their own routes.
+
+OAuth support additionally handles:
+
+```text
+/auth/:provider/callback
+/auth/failure
+```
+
+## Protecting controllers
+
+Authify includes its authentication concern in `ApplicationController`.
+
+Require authentication:
+
+```ruby
+class DashboardController < ApplicationController
+  require_authentication
+end
+```
+
+Protect selected actions:
+
+```ruby
+class ProfilesController < ApplicationController
+  require_authentication only: %i[edit update]
+end
+```
+
+Available controller helpers include:
+
+```ruby
+current_user
+authenticated?
+```
+
+Unauthenticated users are redirected to the sign-in page, and safe GET destinations are remembered for the post-login redirect.
+
+## Sudo / step-up authentication
+
+Install sudo mode:
+
+```bash
+bin/rails generate authify:install --sudo
+bin/rails db:migrate
+```
+
+Protect sensitive actions:
+
+```ruby
+class Account::PasswordsController < ApplicationController
+  require_authentication
+  require_sudo only: %i[edit update]
+end
+```
+
+Require a recently completed challenge:
+
+```ruby
+require_sudo freshness: 2.minutes, only: :destroy
+```
+
+Sudo state is stored on the current `AuthifySession` using `sudoed_at`, `sudo_expires_at`, and `sudo_method`. The default validity window is ten minutes.
+
+Good sudo-protected actions include:
+
+- Changing email or password
+- Deleting an account
+- Disabling two-factor authentication
+- Viewing recovery codes
+- Creating API tokens
+- Changing roles or permissions
+
+## Password security
+
+Generated user models include:
+
+```ruby
+include Authify::Authenticatable
+include Authify::SecurePassword
+```
+
+Authify uses Rails `has_secure_password` and `bcrypt`. Defaults:
+
+```ruby
+config.password_minimum_length = 12
+config.password_maximum_length = 128
+config.pwned_password_check = true
+config.pwned_fail_closed = false
+config.pwned_timeout = 3.seconds
+```
+
+The breach checker hashes the password with SHA-1 locally, sends only the first five hash characters to the Pwned Passwords range API, and compares suffixes locally. The plain password is never sent.
+
+The checker fails open by default during network outages so registration is not blocked. Applications with strict availability requirements may choose fail-closed behavior.
+
+
+## Branded authentication emails
+
+The basic installer generates polished multipart email templates. Every message has responsive HTML, a plain-text fallback, application branding, support details, safe security wording, and a copyable fallback link where appropriate.
+
+Generated messages:
+
+- Email-address verification
+- Password reset
+- Welcome after successful verification
+- Password-changed security alert
+- New sign-in security alert
+
+Generated files include:
+
+```text
+app/mailers/authify_mailer.rb
+app/views/layouts/authify_mailer.html.erb
+app/views/layouts/authify_mailer.text.erb
+app/views/authify_mailer/*.html.erb
+app/views/authify_mailer/*.text.erb
+test/mailers/previews/authify_mailer_preview.rb
+```
+
+Configure branding in `config/initializers/authify.rb`:
+
+```ruby
+Authify.configure do |config|
+  config.app_name = "Acme Portal"
+  config.company_name = "Acme Incorporated"
+  config.mailer_from = "security@acme.example"
+  config.support_email = "support@acme.example"
+  config.logo_url = "https://acme.example/logo-email.png"
+  config.primary_color = "#2563eb"
+  config.email_footer_text = "You received this security message because you have an Acme account."
+end
+```
+
+`logo_url` must be an absolute URL that an email client can load. Keep the image small and host it over HTTPS. Email styling uses inline CSS for broad mail-client compatibility and does not depend on the application's Tailwind build.
+
+Security notification controls:
+
+```ruby
+config.email_notifications_enabled = true
+config.new_sign_in_notifications = true
+config.password_change_notifications = true
+```
+
+New sign-in alerts are enabled by default. An alert is sent only when both the IP address and device user-agent have not appeared in any prior successful sign-in for the user. A known IP or a known device suppresses the alert.
+
+### Previewing emails
+
+In development, open Rails' standard mailer-preview interface:
+
+```text
+/rails/mailers/authify_mailer
+```
+
+The preview uses the first user record when available and otherwise builds a non-persisted sample user. Configure `default_url_options` before testing links:
+
+```ruby
+# config/environments/development.rb
+config.action_mailer.default_url_options = { host: "localhost", port: 3000 }
+```
+
+Production example:
+
+```ruby
+config.action_mailer.default_url_options = { host: "app.example.com", protocol: "https" }
+```
+
+Authify queues messages with `deliver_later`; make sure Active Job is connected to a working queue adapter in production.
+
+## Sessions
+
+The browser receives an encrypted, HTTP-only cookie containing a random opaque token. The database stores only its SHA-256 digest.
+
+Default session settings:
+
+```ruby
+config.session_idle_timeout = 30.minutes
+config.session_absolute_timeout = 30.days
+config.remember_me_duration = 30.days
+```
+
+Normal browser sessions expire after the configured idle timeout. Remembered sessions use a persistent cookie and bypass the idle timeout, but still expire after `remember_me_duration`. Revocation, password changes, email changes, disabled accounts, and verification enforcement continue to invalidate remembered sessions.
+
+The generated cookie uses:
+
+```ruby
+httponly: true
+secure: Rails.env.production?
+same_site: :lax
+```
+
+Password resets revoke all existing Authify sessions.
+
+## Configuration
+
+The installer creates `config/initializers/authify.rb`:
+
+```ruby
+Authify.configure do |config|
+  config.user_class_name = "User"
+  config.password_minimum_length = 12
+  config.password_maximum_length = 128
+  config.pwned_password_check = true
+  config.pwned_fail_closed = false
+  config.email_verification_required = true
+  config.session_idle_timeout = 30.minutes
+  config.session_absolute_timeout = 30.days
+  config.remember_me_duration = 30.days
+  config.sudo_timeout = 10.minutes
+  config.after_sign_in_path = "/"
+  config.after_sign_out_path = "/"
+end
+```
+
+## Mailer setup
+
+Configure a host so verification and reset links are generated correctly:
+
+```ruby
+# config/environments/production.rb
+config.action_mailer.default_url_options = {
+  host: "example.com",
+  protocol: "https"
+}
+```
+
+Configure a delivery provider separately. Authify generates editable HTML templates in `app/views/authify_mailer`.
+
+In development, do not copy verification or reset links from Rails' raw mail log. Email bodies are quoted-printable encoded, and long URLs may be wrapped with `=` as a soft line-break marker; copying one physical log line truncates the token. Open the message through a real mail client or a development inbox such as Letter Opener, Mailpit, or Mailcatcher. If a link was copied from the log, request a fresh message and use the complete decoded URL.
+
+## Two-factor authentication
+
+Install TOTP support:
+
+```bash
+bin/rails generate authify:install --two-factor
+bin/rails db:migrate
+```
+
+This adds `rotp` and `rqrcode`, an encrypted TOTP secret, enrollment controller, QR code page, and enable/disable routes.
+
+Recovery codes are generated when 2FA is enabled, displayed once, stored only as digests, and consumed atomically. Regenerating codes requires the current password and a valid authenticator code and invalidates every previous recovery code.
+
+## API tokens
+
+Install personal token support:
+
+```bash
+bin/rails generate authify:install --api
+bin/rails db:migrate
+```
+
+Raw tokens are returned only when created. The database stores the token digest. Add application-specific scopes and authorization rules before exposing protected API endpoints.
+
+## Roles and administration
+
+Install role support:
+
+```bash
+bin/rails generate authify:install --roles
+bin/rails db:migrate
+```
+
+Check a role:
+
+```ruby
+current_user.has_role?(:admin)
+```
+
+The optional admin event page requires `has_role?(:admin)`. Authify roles are intentionally small; use Pundit, Action Policy, or application policies for full authorization.
+
+## Multi-tenancy
+
+The `--multi-tenant` option generates a starting concern. Authify cannot infer whether the tenant is a school, organization, account, subdomain, or request context, so you must add the correct association, foreign key, composite unique index, and tenant-resolution logic.
+
+Never rely only on a model validation for tenant isolation. Enforce database indexes and scope every authentication lookup to the current tenant.
+
+## Diagnostics
+
+Run:
+
+```bash
+bin/rails authify:doctor
+```
+
+The doctor checks models, password hashing, routes, mailer setup, secret key base, manifest presence, and production HTTPS/mailer host configuration.
+
+Show version and installed features:
+
+```bash
+bin/rails authify:version
+```
+
+## Upgrading
+
+After updating the gem:
+
+```bash
+bundle update authify_rails
+bin/rails generate authify:upgrade
+bin/rails authify:doctor
+bin/rails test
+```
+
+The upgrade generator reports the installed and gem versions without overwriting customized application files. Review [UPGRADING.md](UPGRADING.md) for release-specific instructions.
+
+## Security notes
+
+Before production deployment:
+
+- Use HTTPS and enable `config.force_ssl`
+- Configure mail delivery and URL options
+- Review every generated migration
+- Apply database uniqueness indexes
+- Keep OAuth authorization on POST requests and require verified provider emails before account linking
+- Add rate limiting at the application or edge layer
+- Add authorization policies beyond authentication
+- Protect sensitive actions with sudo mode
+- Test account enumeration and redirect behavior
+- Run your application's security scanners
+- Keep Rails and Authify updated
+- Use a shared production Rails cache store so controller rate limits are enforced consistently across processes
+
+Email changes require the current password or an unexpired Authify sudo session. The current address remains active until the new address is confirmed. Authify rate-limits requests and confirmations, notifies the old address when a change is requested, notifies both addresses after confirmation, supports cancellation, and revokes all sessions after the address changes.
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
+## Development
+
+```bash
+bundle install
+bundle exec rake test
+```
+
+Build the gem:
+
+```bash
+gem build authify_rails.gemspec
+```
+
+## License
+
+Authify Rails is available under the MIT License.

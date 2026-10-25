@@ -1,0 +1,5 @@
+<%% content_for :preheader, "Confirm your new email address." %>
+<h1 style="margin:0 0 16px;font-size:26px;line-height:1.25;">Confirm your new email</h1>
+<p style="margin:0 0 16px;color:#374151;line-height:1.7;">Confirm <strong><%%= @new_email %></strong> as the new email address for your account.</p>
+<p style="margin:24px 0;"><a href="<%%= @action_url %>" style="display:inline-block;background:<%%= Authify.configuration.primary_color %>;color:#fff;text-decoration:none;font-weight:700;padding:13px 20px;border-radius:10px;">Confirm email change</a></p>
+<p style="margin:0;color:#4b5563;font-size:14px;line-height:1.7;">Your current email remains unchanged until you use this link. The link expires in <%%= distance_of_time_in_words(Authify.configuration.email_verification_ttl) %>.</p>

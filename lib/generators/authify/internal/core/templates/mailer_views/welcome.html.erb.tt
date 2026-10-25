@@ -1,0 +1,5 @@
+<%% content_for :preheader, "Your account is verified and ready to use." %>
+<h1 style="margin:0 0 16px;font-size:26px;line-height:1.25;">Your account is ready</h1>
+<p style="margin:0 0 16px;color:#374151;line-height:1.7;">Thanks for confirming your email address. Your <strong><%%= @app_name %></strong> account is now ready.</p>
+<p style="margin:24px 0;"><a href="<%%= @action_url %>" style="display:inline-block;background:<%%= Authify.configuration.primary_color %>;color:#fff;text-decoration:none;font-weight:700;padding:13px 20px;border-radius:10px;">Continue to <%%= @app_name %></a></p>
+<p style="margin:0;color:#4b5563;font-size:14px;line-height:1.7;">For your security, use a unique password and review unfamiliar sessions from your account security page.</p>

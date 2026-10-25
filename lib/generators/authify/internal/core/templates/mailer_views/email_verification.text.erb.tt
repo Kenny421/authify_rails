@@ -1,0 +1,7 @@
+Confirm your email address
+
+Welcome to <%%= @app_name %>. Confirm that <%%= @user.email %> is your email address:
+
+<%%= @action_url %>
+
+This link expires in <%%= distance_of_time_in_words(Authify.configuration.email_verification_ttl) %>. If you did not create this account, ignore this email.
