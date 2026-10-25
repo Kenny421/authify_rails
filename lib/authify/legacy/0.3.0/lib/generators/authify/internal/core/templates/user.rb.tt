@@ -1,0 +1,4 @@
+class <%= options[:user_model] %> < ApplicationRecord
+  include Authify::Authenticatable
+  include Authify::SecurePassword
+end

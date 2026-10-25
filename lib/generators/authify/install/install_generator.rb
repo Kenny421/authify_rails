@@ -3,6 +3,7 @@
 require "bundler"
 require "rails/generators"
 require "authify/installation_manifest"
+require "authify/template_catalog"
 
 module Authify
   module Generators
@@ -10,7 +11,7 @@ module Authify
       source_root File.expand_path("templates", __dir__)
 
       CORE_FEATURES = %i[core sessions registration password_reset email_verification mailer views security_events].freeze
-      OPTIONAL_FEATURES = %i[oauth roles two_factor api sudo admin multi_tenant].freeze
+      OPTIONAL_FEATURES = %i[oauth roles two_factor api sudo admin passkeys multi_tenant].freeze
 
       class_option :user_model, type: :string, default: "User", desc: "User model name"
       class_option :views, type: :string, default: "tailwind", enum: %w[tailwind plain none]
@@ -21,6 +22,7 @@ module Authify
       class_option :sudo, type: :boolean, default: false, desc: "Install step-up authentication"
       class_option :admin, type: :boolean, default: false, desc: "Install authentication-event admin pages"
       class_option :multi_tenant, type: :boolean, default: false, desc: "Install tenant-scoping concern"
+      class_option :passkeys, type: :boolean, default: false, desc: "Install WebAuthn passkeys"
       class_option :all, type: :boolean, default: false, desc: "Install every optional feature"
       class_option :skip_bundle, type: :boolean, default: false, desc: "Do not run bundle install"
 
@@ -29,8 +31,36 @@ module Authify
       end
 
       def validate_dependencies
+        if manifest.feature?(:core) && manifest.version != Authify::VERSION
+          raise Thor::Error, "Upgrade existing generated files first: bin/rails generate authify:upgrade --dry-run"
+        end
+        if manifest.installed? && manifest.feature?(:core)
+          if user_model_name != "User" && user_model_name != manifest.user_model
+            raise Thor::Error, "Installed user model is #{manifest.user_model}; changing it requires a manual migration."
+          end
+          @effective_user_model = manifest.user_model
+          @effective_views = manifest.views
+          say "Keeping installed views=#{manifest.views}; use the upgrade preview to review template changes." if options[:views] != manifest.views
+        end
         if enabled?(:admin) && !enabled_or_installed?(:roles)
           raise Thor::Error, "--admin requires --roles, or roles must already be installed."
+        end
+      end
+
+      def preflight_existing_authentication
+        return if manifest.feature?(:core)
+        model = File.join(destination_root, "app/models/#{user_model_name.underscore}.rb")
+        controller = File.join(destination_root, "app/controllers/application_controller.rb")
+        routes = File.join(destination_root, "config/routes.rb")
+        source = File.file?(model) ? File.read(model) : ""
+        if source.match?(/\bdevise\b|acts_as_authentic|authenticates_with_sorcery!|has_secure_password/)
+          raise Thor::Error, "Existing authentication found in #{model}. Review an explicit migration to Authify; installation stopped before writes."
+        end
+        if File.file?(controller) && File.read(controller).match?(/include\s+Authentication\b|authenticate_user!/)
+          raise Thor::Error, "Existing authentication controller integration found. Review compatibility before installing Authify."
+        end
+        if File.file?(routes) && File.read(routes).match?(/resource[s]?\s+:sessions?\b|as:\s*:new_session\b|devise_for/)
+          raise Thor::Error, "Existing authentication routes found. Review route conflicts before installing Authify."
         end
       end
 
@@ -42,6 +72,7 @@ module Authify
           gem "omniauth-google-oauth2", "~> 1.2" unless gem_declared?("omniauth-google-oauth2")
           gem "omniauth-facebook", "~> 10.0" unless gem_declared?("omniauth-facebook")
         end
+        gem "webauthn", "~> 3.0" if enabled?(:passkeys) && !gem_declared?("webauthn")
         gem "rotp", "~> 6.3" if enabled?(:two_factor) && !gem_declared?("rotp")
         gem "rqrcode", ">= 3.1", "< 4" if enabled?(:two_factor) && !gem_declared?("rqrcode")
       end
@@ -55,21 +86,26 @@ module Authify
 
       def install_core
         return if manifest.feature?(:core)
+        if manifest.installed?
+          raise Thor::Error, "Existing Authify initializer without installation metadata. Restore config/authify.yml before installing."
+        end
 
-        invoke "authify:internal:core", [], user_model: options[:user_model], views: options[:views]
+        invoke "authify:internal:core", [], user_model: user_model_name, views: view_style
       end
 
       def install_optional_features
-        invoke_feature(:oauth, "authify:internal:oauth", user_model: options[:user_model], views: options[:views])
-        invoke_feature(:roles, "authify:internal:roles", user_model: options[:user_model])
-        invoke_feature(:two_factor, "authify:internal:two_factor", user_model: options[:user_model])
-        invoke_feature(:api, "authify:internal:api", user_model: options[:user_model])
-        invoke_feature(:sudo, "authify:internal:sudo")
-        invoke_feature(:admin, "authify:internal:admin")
-        invoke_feature(:multi_tenant, "authify:internal:multi_tenant", user_model: options[:user_model])
+        invoke_feature(:oauth, "authify:internal:oauth", user_model: user_model_name, views: view_style)
+        invoke_feature(:roles, "authify:internal:roles", user_model: user_model_name)
+        invoke_feature(:two_factor, "authify:internal:two_factor", user_model: user_model_name, views: view_style)
+        invoke_feature(:api, "authify:internal:api", user_model: user_model_name)
+        invoke_feature(:sudo, "authify:internal:sudo", views: view_style)
+        invoke_feature(:admin, "authify:internal:admin", views: view_style)
+        invoke_feature(:passkeys, "authify:internal:passkeys", user_model: user_model_name, views: view_style)
+        invoke_feature(:multi_tenant, "authify:internal:multi_tenant", user_model: user_model_name)
       end
 
       def install_flash_messages
+        return if view_style == "none"
         partial = "app/views/authify/shared/_flash.html.erb"
         template "flash.html.erb.tt", partial unless File.exist?(File.join(destination_root, partial))
 
@@ -90,10 +126,18 @@ module Authify
         features.concat(OPTIONAL_FEATURES.select { |feature| enabled?(feature) })
         manifest.record!(
           version: Authify::VERSION,
-          user_model: options[:user_model],
-          views: options[:views],
+          user_model: user_model_name,
+          views: view_style,
           features: features
         )
+        catalog = Authify::TemplateCatalog.new(user_model: user_model_name, views: view_style, features: manifest.features).files
+        # Only claim ownership where the generated file exactly matches a known template.
+        baselines = manifest.baselines.dup
+        catalog.each do |path, content|
+          actual = File.join(destination_root, path)
+          baselines[path] ||= content if File.file?(actual) && File.read(actual) == content
+        end
+        manifest.record_baselines!(baselines)
       end
 
       def summary
@@ -105,6 +149,9 @@ module Authify
       end
 
       private
+
+      def user_model_name = @effective_user_model || options[:user_model]
+      def view_style = @effective_views || options[:views]
 
       def manifest
         @manifest ||= begin

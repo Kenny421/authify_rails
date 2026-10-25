@@ -1,0 +1,11 @@
+<div>
+  <h1>Create account</h1>
+  <%= form_with model: @user, url: registration_path do |form| %>
+    <% if @user.errors.any? %><div><%= @user.errors.full_messages.to_sentence %></div><% end %>
+    <div><%= form.label :email %><%= form.email_field :email, required: true, autocomplete: "email" %></div>
+    <div><%= form.label :password %><%= form.password_field :password, required: true, autocomplete: "new-password" %></div>
+    <p>Use at least <%= Authify.configuration.password_minimum_length %> characters. Known breached passwords are rejected.</p>
+    <div><%= form.label :password_confirmation %><%= form.password_field :password_confirmation, required: true, autocomplete: "new-password" %></div>
+    <%= form.submit "Create account" %>
+  <% end %>
+</div>

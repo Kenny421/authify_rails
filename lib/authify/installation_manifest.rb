@@ -2,6 +2,7 @@
 
 require "fileutils"
 require "yaml"
+require "time"
 
 module Authify
   class InstallationManifest
@@ -29,6 +30,32 @@ module Authify
       @data["views"] = views
       @data["features"] ||= {}
       features.each { |feature| @data["features"][feature.to_s] = true }
+      write!
+    end
+
+    def user_model = @data.fetch("user_model", "User")
+    def views = @data.fetch("views", "tailwind")
+    def version = @data["version"]
+    def baselines = @data.fetch("files", {})
+
+    def record_baselines!(files)
+      @data["files"] = files
+      @data["template_version"] = Authify::VERSION
+      write!
+    end
+
+    def record_upgrade!(files:)
+      @data["upgrade_history"] ||= []
+      @data["upgrade_history"] << { "from" => version, "to" => Authify::VERSION, "at" => Time.now.utc.iso8601, "status" => "pending_validation" }
+      @data["version"] = Authify::VERSION
+      record_baselines!(files)
+    end
+
+    def verify_upgrade!
+      entry = @data.fetch("upgrade_history", []).last
+      return unless entry && entry["status"] == "pending_validation"
+      entry["status"] = "doctor_passed"
+      entry["verified_at"] = Time.now.utc.iso8601
       write!
     end
 

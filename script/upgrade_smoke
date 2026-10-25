@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${AUTHIFY_GEM_PATH:?Set AUTHIFY_GEM_PATH to the current gem checkout}"
+task_tmp=$(mktemp -d)
+trap 'rm -rf "$task_tmp"' EXIT
+mkdir "$task_tmp/previous"
+git -C "$AUTHIFY_GEM_PATH" archive b1b49580da4ea7cd6581ae47712e1872e66f97bc | tar -x -C "$task_tmp/previous"
+bundle exec rails new "$task_tmp/app" --skip-git --skip-bundle --database=sqlite3
+current_gem=$AUTHIFY_GEM_PATH
+export AUTHIFY_GEM_PATH="$task_tmp/previous"
+cd "$task_tmp/app"
+printf '\ngem "authify_rails", path: ENV.fetch("AUTHIFY_GEM_PATH")\n' >> Gemfile
+bundle install
+bin/rails generate authify:install --all
+RAILS_ENV=test bin/rails db:prepare
+printf '\n# Application customization preserved during upgrade\n' >> app/controllers/authify/sessions_controller.rb
+export AUTHIFY_GEM_PATH=$current_gem
+bundle update authify_rails
+bin/rails generate authify:upgrade --dry-run
+bin/rails generate authify:upgrade
+rg 'Application customization preserved' app/controllers/authify/sessions_controller.rb
+RAILS_ENV=test bin/rails db:migrate
+bin/rails test test/integration/authify_security_flows_test.rb test/integration/authify_oauth_security_test.rb test/integration/authify_hardening_test.rb

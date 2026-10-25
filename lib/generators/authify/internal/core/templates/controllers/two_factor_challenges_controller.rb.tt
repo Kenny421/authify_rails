@@ -52,7 +52,7 @@ module Authify
     def load_pending_challenge
       data = pending_challenge
       started_at = Time.zone.at(data[:started_at].to_i) if data
-      @user = Authify.configuration.user_class.find_by(id: data&.dig(:user_id))
+      @user = Authify.user_scope.find_by(id: data&.dig(:user_id))
       @credential = active_two_factor_credential_for(@user)
 
       verified = !Authify.configuration.email_verification_required || @user&.email_verified?

@@ -37,10 +37,11 @@ Optional features:
 - `--oauth` — Google and Facebook sign-in, with support for other OmniAuth providers
 - `--roles` — simple role assignments
 - `--two-factor` — TOTP authenticator-app enrollment with single-use recovery codes
-- `--api` — personal API tokens with digested storage
+- `--api` — digested personal API tokens, Bearer authentication and explicit scopes
 - `--sudo` — step-up authentication for sensitive actions
 - `--admin` — authentication-event administration page; requires roles
-- `--multi-tenant` — a tenant-scoping concern to adapt to the application
+- `--passkeys` — WebAuthn registration, sign-in, management and browser controls
+- `--multi-tenant` — tenant preparation with explicit activation and a trusted resolver
 - `--all` — all optional features
 
 ## Requirements
@@ -51,6 +52,21 @@ Optional features:
 - A Rails application using cookies for browser sessions
 
 Authify currently targets Rails 8 migrations. Confirm compatibility before using it with another Rails version.
+
+## Upgrading an existing installation
+
+Read [UPGRADING.md](UPGRADING.md) before updating an existing app. Version 0.4.0
+adds a read-only preview and template-aware merge process:
+
+```bash
+bin/rails generate authify:upgrade --dry-run
+bin/rails generate authify:upgrade
+```
+
+Conflicts block all application-file updates and produce reviewable proposals.
+Custom branding and integration files remain application-owned. New installs stop
+before writes when common existing authentication integrations or route conflicts
+are detected; review those migrations explicitly.
 
 ## Installation
 
@@ -142,7 +158,8 @@ bin/rails db:migrate
 5. Add multi-tenant support only when the application already uses tenant-scoped data:
 
 ```bash
-bin/rails generate authify:install --multi-tenant
+bin/rails generate authify:install --passkeys
+--multi-tenant
 ```
 
 After enabling `--multi-tenant`, wire tenant associations and add tenant indexes manually to match the data model.
@@ -271,7 +288,7 @@ Custom user model example:
 bin/rails generate authify:install --user-model=Account
 ```
 
-When the model already exists, Authify injects its authentication concerns rather than replacing the model file. Review the generated migration carefully because an existing table may need missing authentication columns added manually.
+When the model already exists, Authify injects its authentication concerns rather than replacing the model file. Review the generated migration: missing authentication columns are added while incompatible types require manual resolution.
 
 For a new application, the installer creates `HomeController#index`, its view, and `root "home#index"`. Existing home files and existing root routes are preserved.
 
@@ -579,7 +596,7 @@ The optional admin event page requires `has_role?(:admin)`. Authify roles are in
 
 ## Multi-tenancy
 
-The `--multi-tenant` option generates a starting concern. Authify cannot infer whether the tenant is a school, organization, account, subdomain, or request context, so you must add the correct association, foreign key, composite unique index, and tenant-resolution logic.
+In 0.3.0 the `--multi-tenant` option generated a starting concern; see the 0.4.0 tenant section below for the current workflow. Authify cannot infer whether the tenant is a school, organization, account, subdomain, or request context, so you must add the correct association, foreign key, composite unique index, and tenant-resolution logic.
 
 Never rely only on a model validation for tenant isolation. Enforce database indexes and scope every authentication lookup to the current tenant.
 
@@ -610,7 +627,7 @@ bin/rails authify:doctor
 bin/rails test
 ```
 
-The upgrade generator reports the installed and gem versions without overwriting customized application files. Review [UPGRADING.md](UPGRADING.md) for release-specific instructions.
+The upgrade generator previews template changes, preserves non-overlapping customizations, and blocks application updates when conflicts require review. Review [UPGRADING.md](UPGRADING.md) for release-specific instructions.
 
 ## Security notes
 
@@ -649,3 +666,97 @@ gem build authify_rails.gemspec
 ## License
 
 Authify Rails is available under the MIT License.
+
+
+## API authentication in 0.4.0
+
+Declare allowed scopes in your Authify initializer before issuing tokens:
+
+```ruby
+config.api_scopes = %w[books:read books:write]
+```
+
+A resource controller can authenticate without browser cookies:
+
+```ruby
+class Api::BooksController < ActionController::API
+  include Authify::ApiAuthentication
+  require_api_scope "books:read"
+
+  def index
+    render json: Current.user.books
+  end
+end
+```
+
+Send `Authorization: Bearer authify_live_...`. Missing, expired, revoked,
+unverified-account, disabled-account, wrong-tenant and no-longer-approved-scope
+tokens are rejected. Missing resource scopes return 403. All listed scopes are
+required. Tokens are returned in full only on creation; stored values are digests.
+The generated token-management controller still uses browser authentication and
+CSRF protection. Use `AuthifyApiToken.issue!(..., expires_at: 30.days.from_now)`
+when issuing expiring tokens programmatically. Existing scopes must be explicitly
+included in the configuration; an empty allowlist only permits unscoped tokens.
+
+## Passkeys in 0.4.0
+
+```bash
+bin/rails generate authify:install --passkeys
+bin/rails db:migrate
+```
+
+Configure explicit trusted origins and the RP ID:
+
+```text
+AUTHIFY_WEBAUTHN_ORIGINS=https://app.example.com
+AUTHIFY_WEBAUTHN_RP_ID=app.example.com
+```
+
+Local development defaults to `http://localhost:3000` and RP ID `localhost`.
+Production has no permissive defaults. Use a current browser supporting
+`PublicKeyCredential.parseCreationOptionsFromJSON`,
+`parseRequestOptionsFromJSON` and credential `toJSON()`; HTTPS is required except
+for localhost. The generator adds a passkey sign-in button and `/passkeys` settings.
+Enrollment/deletion requires a recent authenticated session or active sudo state.
+WebAuthn verifies origin, RP ID, signature, user verification and counters;
+database-backed challenges expire after five minutes and are consumed once even
+for authenticators whose counter is zero. These are passwordless passkeys with
+required local user verification; they do not prompt for a second TOTP code.
+Schedule `bin/rails authify:prune_challenges` periodically to remove expired rows.
+Keep a separate recovery method and test with real target devices before rollout.
+No existing login method is removed when passkeys are installed.
+
+## Tenant authentication in 0.4.0
+
+```bash
+bin/rails generate authify:install --multi-tenant
+bin/rails db:migrate
+```
+
+The generated `config/initializers/authify_tenant.rb` leaves tenant mode disabled.
+Configure `tenant_resolver` from trusted organization/subdomain middleware, backfill
+every user's `tenant_id`, and configure app-owned tenant associations/foreign keys.
+Do not trust a submitted tenant parameter. The default resolver reads
+`request.env["authify.tenant_id"]`; your middleware must populate it.
+
+After backfilling, explicitly generate and review the constraint conversion:
+
+```bash
+bin/rails generate authify:tenant_indexes
+# Review: this replaces global email indexes with tenant-scoped unique indexes.
+bin/rails db:migrate
+```
+
+Set `AUTHIFY_TENANT_ENABLED=true` only after configuring and testing the resolver.
+Missing tenant context fails closed. Registration, password sign-in/reset, email
+verification/change, sessions, API tokens, passkeys and user-linked admin events
+are scoped to the resolved tenant. Unknown-account events without a user are not
+shown in tenant-scoped admin listings. OAuth identities are currently globally
+unique by provider/UID and cannot be linked into another tenant; shared-identity
+membership across tenants needs an application-specific account model.
+
+Global uniqueness constraints are preserved until you explicitly run the reviewed
+conversion migration. Custom global unique indexes may also need manual conversion.
+Rollback to global indexes can fail once tenants share an email address, so there
+is no automatic destructive rollback. A later security upgrade preserves named
+tenant email indexes instead of reintroducing global constraints.

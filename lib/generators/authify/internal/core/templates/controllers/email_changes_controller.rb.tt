@@ -29,7 +29,7 @@ module Authify
     end
 
     def show
-      user = Authify.configuration.user_class.find_by(
+      user = Authify.user_scope.find_by(
         email_change_token_digest: Authify::Token.digest(params[:token])
       )
       return invalid_token unless user&.email_change_token_valid?(params[:token])

@@ -1,0 +1,27 @@
+Authify.configure do |config|
+  config.user_class_name = "<%= options[:user_model] %>"
+
+  # Branding used by generated authentication emails.
+  config.app_name = Rails.application.class.module_parent_name
+  config.company_name = config.app_name
+  config.mailer_from = "no-reply@example.com"
+  config.support_email = nil
+  config.logo_url = nil
+  config.primary_color = "#111827"
+  config.email_footer_text = nil
+
+  config.password_minimum_length = 12
+  config.password_maximum_length = 128
+  config.pwned_password_check = true
+  config.pwned_fail_closed = false
+  config.email_verification_required = true
+  config.email_change_request_cooldown = 1.minute
+  config.session_idle_timeout = 30.minutes
+  config.session_absolute_timeout = 30.days
+  config.remember_me_duration = 30.days
+
+  # Security email preferences.
+  config.email_notifications_enabled = true
+  config.new_sign_in_notifications = true
+  config.password_change_notifications = true
+end

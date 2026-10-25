@@ -1,0 +1,15 @@
+class PrepareAuthifyTenantAuthentication < ActiveRecord::Migration[8.0]
+  def up
+    table = :<%= options[:user_model].underscore.pluralize %>
+    add_column table, :tenant_id, :bigint unless column_exists?(table, :tenant_id)
+    add_index table, [:tenant_id, :email], unique: true unless index_exists?(table, [:tenant_id, :email], unique: true)
+    # Global indexes are intentionally retained. After backfilling tenant IDs,
+    # review a SEPARATE migration replacing global LOWER(email)/pending_email
+    # indexes with unique (tenant_id, LOWER(...)) indexes before allowing the
+    # same email in multiple tenants. Authify never silently drops constraints.
+  end
+
+  def down
+    raise ActiveRecord::IrreversibleMigration, "Review tenant backfill and indexes before rollback."
+  end
+end

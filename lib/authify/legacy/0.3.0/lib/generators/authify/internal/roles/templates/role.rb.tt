@@ -1,0 +1,3 @@
+class AuthifyRole < ApplicationRecord
+  has_many :authify_role_assignments, dependent: :destroy
+end

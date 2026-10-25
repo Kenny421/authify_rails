@@ -14,9 +14,13 @@ module Authify
                   :email_verification_required, :app_name, :company_name,
                   :support_email, :mailer_from, :logo_url, :primary_color,
                   :email_footer_text, :email_notifications_enabled,
-                  :new_sign_in_notifications, :password_change_notifications
+                  :new_sign_in_notifications, :password_change_notifications, :api_scopes, :tenant_enabled, :tenant_key, :tenant_resolver
 
     def initialize
+      @tenant_enabled = false
+      @tenant_key = :tenant_id
+      @tenant_resolver = nil
+      @api_scopes = []
       @user_class_name = "User"
       @session_class_name = "AuthifySession"
       @mailer_class_name = "AuthifyMailer"

@@ -6,7 +6,7 @@ class AuthifySecurityFlowsTest < ActionDispatch::IntegrationTest
     Authify.configuration.email_notifications_enabled = false
     AuthenticationEvent.delete_all
     AuthifySession.delete_all
-    Authify.configuration.user_class.delete_all
+    Authify.configuration.user_class.destroy_all
   end
 
   test "verified user can sign in and session fixation token is replaced" do
@@ -128,7 +128,7 @@ class AuthifySecurityFlowsTest < ActionDispatch::IntegrationTest
   private
 
   def create_user(verified:)
-    Authify.configuration.user_class.create!(
+    Authify.user_scope.create!(
       email: "person-#{SecureRandom.hex(4)}@example.com",
       password: "correct-password-123",
       password_confirmation: "correct-password-123",

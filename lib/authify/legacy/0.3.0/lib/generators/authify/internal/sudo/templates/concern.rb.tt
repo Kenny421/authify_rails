@@ -1,0 +1,37 @@
+module Authify
+  module Sudo
+    extend ActiveSupport::Concern
+
+    included do
+      helper_method :sudo?
+    end
+
+    class_methods do
+      def require_sudo(freshness: nil, **options)
+        before_action(**options) { authify_require_sudo(freshness: freshness) }
+      end
+    end
+
+    private
+
+    def sudo?
+      record = Current.authify_session
+      record&.sudo_expires_at&.future?
+    end
+
+    def authify_require_sudo(freshness: nil)
+      return if authify_sudo_valid?(freshness: freshness)
+
+      session[:authify_sudo_return_to] = request.fullpath if request.get?
+      redirect_to new_sudo_path, alert: "Confirm your identity to continue."
+    end
+
+    def authify_sudo_valid?(freshness: nil)
+      record = Current.authify_session
+      return false unless record&.sudo_expires_at&.future?
+      return true if freshness.blank?
+
+      record.sudoed_at.present? && record.sudoed_at >= freshness.ago
+    end
+  end
+end

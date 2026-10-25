@@ -1,0 +1,10 @@
+<h1>Passkeys</h1>
+<p>Manage passkeys after a recent sign-in. Your device verifies your fingerprint, face, or PIN.</p>
+<ul>
+<%% current_user.authify_passkeys.each do |passkey| %>
+  <li><%%= passkey.name %> <%%= button_to "Remove", passkey_path(passkey), method: :delete %></li>
+<%% end %>
+</ul>
+<button type="button" id="authify-register-passkey">Add a passkey</button>
+<p id="authify-passkey-status" role="status"></p>
+<%%= javascript_include_tag "authify_passkeys", defer: true %>

@@ -1,0 +1,1 @@
+<div><h1>Your sessions</h1><div><% @sessions.each do |record| %><div><p><%= record.user_agent.presence || "Unknown device" %></p><p><%= record.ip_address %> · <%= record.created_at %></p><%= button_to "Revoke", account_session_path(record), method: :delete unless record.revoked_at %></div><% end %></div></div>

@@ -9,6 +9,7 @@ require_relative "authify/engine"
 require_relative "authify/token"
 require_relative "authify/password_breach_checker"
 require_relative "authify/installation_manifest"
+require_relative "authify/tenant"
 
 module Authify
   class Error < StandardError; end

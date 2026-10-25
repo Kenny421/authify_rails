@@ -1,6 +1,7 @@
 module Api
   class AuthifyTokensController < ApplicationController
     require_authentication
+    rate_limit to: 10, within: 5.minutes, only: :create, with: -> { head :too_many_requests }
     def index = render json: current_user.authify_api_tokens.select(:id, :name, :token_prefix, :scopes, :expires_at, :last_used_at, :revoked_at)
     def create
       record, raw = AuthifyApiToken.issue!(user: current_user, name: params.require(:name), scopes: Array(params[:scopes]))

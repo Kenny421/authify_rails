@@ -1,0 +1,56 @@
+namespace :authify do
+  desc "Check the Authify installation"
+  task doctor: :environment do
+    routes = Rails.application.routes.routes.map { |route| route.name&.to_s }.compact
+    user_class = Authify.configuration.user_class
+    session_class = Authify.configuration.session_class
+    manifest = Authify::InstallationManifest.new(root: Rails.root)
+
+    checks = {
+      "User model is available" => user_class.table_exists?,
+      "Session model is available" => session_class.table_exists?,
+      "Password hashing is enabled" => user_class.method_defined?(:authenticate),
+      "Authentication concern is installed" => ApplicationController < Authify::Authentication,
+      "Sign-in route exists" => routes.include?("new_session"),
+      "Password reset route exists" => routes.include?("new_password"),
+      "Password change route exists" => routes.include?("edit_account_password"),
+      "Email change route exists" => routes.include?("edit_account_email"),
+      "Sign-out route exists" => routes.include?("sign_out"),
+      "Pending email fields exist" => %w[pending_email email_change_token_digest email_change_sent_at].all? { |column| user_class.column_names.include?(column) },
+      "Session authentication method exists" => session_class.column_names.include?("authentication_method"),
+      "Remembered session field exists" => session_class.column_names.include?("remembered"),
+      "Mailer is configured" => Authify.configuration.mailer_class < ActionMailer::Base,
+      "Secret key base is present" => Rails.application.secret_key_base.present?,
+      "Authify manifest exists" => manifest.installed?
+    }
+
+    if manifest.feature?(:two_factor)
+      checks["Active Record encryption primary key is configured"] =
+        Rails.application.credentials.dig(:active_record_encryption, :primary_key).present? ||
+        ENV["ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY"].present?
+      checks["Active Record encryption deterministic key is configured"] =
+        Rails.application.credentials.dig(:active_record_encryption, :deterministic_key).present? ||
+        ENV["ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY"].present?
+      checks["Active Record encryption salt is configured"] =
+        Rails.application.credentials.dig(:active_record_encryption, :key_derivation_salt).present? ||
+        ENV["ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT"].present?
+    end
+
+    if Rails.env.production?
+      checks["Force SSL is enabled"] = Rails.application.config.force_ssl == true
+      checks["Mailer host is configured"] = ActionMailer::Base.default_url_options[:host].present?
+      checks["Shared cache store is configured"] = Rails.application.config.cache_store.present? &&
+        Rails.application.config.cache_store.to_s != "null_store"
+    end
+
+    checks.each { |name, passed| puts "#{passed ? '✔' : '✘'} #{name}" }
+    abort "Authify doctor found problems." unless checks.values.all?
+  end
+
+  desc "Print the installed Authify version and features"
+  task version: :environment do
+    manifest = Authify::InstallationManifest.new(root: Rails.root)
+    puts "Authify gem: #{Authify::VERSION}"
+    puts "Installed features: #{manifest.features.sort.join(', ')}"
+  end
+end

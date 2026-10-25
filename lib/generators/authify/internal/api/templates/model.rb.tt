@@ -7,6 +7,23 @@ class AuthifyApiToken < ApplicationRecord
     [token, "authify_live_#{raw}"]
   end
 
+  validates :name, presence: true
+  validate do
+    allowed = Array(Authify.configuration.api_scopes).map(&:to_s)
+    errors.add(:scopes, "contains unknown permissions") unless scopes.is_a?(Array) && scopes.all? { |scope| scope.is_a?(String) && allowed.include?(scope) }
+  end
+
+  def self.authenticate(bearer)
+    return unless bearer.to_s.match?(/\Aauthify_live_[A-Za-z0-9_-]{43}\z/)
+    raw = bearer.delete_prefix("authify_live_")
+    token = find_by(token_digest: Authify::Token.digest(raw))
+    return unless token&.active? && token.user.disabled_at.blank?
+    return unless token.scopes.is_a?(Array) && (token.scopes - Array(Authify.configuration.api_scopes).map(&:to_s)).empty?
+    return if Authify.configuration.email_verification_required && !token.user.email_verified?
+    return if Authify.configuration.tenant_enabled && !Authify.user_scope.where(id: token.user_id).exists?
+    token
+  end
+
   def active?
     revoked_at.nil? && (expires_at.nil? || expires_at.future?)
   end

@@ -7,14 +7,17 @@ class AuthifyOauthIdentity < ApplicationRecord
   def self.from_omniauth!(auth)
     transaction do
       identity = lock.find_by(provider: auth.provider, uid: auth.uid)
-      return identity if identity
+      if identity
+        raise ArgumentError, "Identity belongs to another tenant." unless Authify.user_scope.where(id: identity.user_id).exists?
+        return identity
+      end
 
       email = auth.info.email.to_s.strip.downcase
       raise ArgumentError, "The provider did not return an email address." if email.blank?
       raise ArgumentError, "The provider has not verified this email address." unless verified_email?(auth)
 
-      user = Authify.configuration.user_class.find_by("LOWER(email) = ?", email)
-      user ||= Authify.configuration.user_class.create!(
+      user = Authify.user_scope.find_by("LOWER(email) = ?", email)
+      user ||= Authify.user_scope.create!(
         email: email,
         password_digest: BCrypt::Password.create(SecureRandom.base58(48)),
         email_verified_at: Time.current
@@ -23,7 +26,9 @@ class AuthifyOauthIdentity < ApplicationRecord
       create!(user: user, provider: auth.provider, uid: auth.uid, email: email)
     end
   rescue ActiveRecord::RecordNotUnique
-    find_by!(provider: auth.provider, uid: auth.uid)
+    identity = find_by!(provider: auth.provider, uid: auth.uid)
+    raise ArgumentError, "Identity belongs to another tenant." unless Authify.user_scope.where(id: identity.user_id).exists?
+    identity
   end
 
   def self.verified_email?(auth)

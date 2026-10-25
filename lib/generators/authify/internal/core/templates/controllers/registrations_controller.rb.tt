@@ -4,11 +4,11 @@ module Authify
                with: -> { redirect_to new_registration_path, alert: "Too many registration attempts. Try again later." }
 
     def new
-      @user = Authify.configuration.user_class.new
+      @user = Authify.user_scope.new
     end
 
     def create
-      @user = Authify.configuration.user_class.new(user_params)
+      @user = Authify.user_scope.new(user_params)
       if @user.save
         token = @user.instance_variable_get(:@authify_initial_verification_token) || @user.issue_email_verification!
         Authify.configuration.mailer_class.with(user: @user, token: token).email_verification.deliver_later

@@ -110,7 +110,7 @@ class GeneratorIntegrationTest < Minitest::Test
     two_factor_view = read_generated("app/views/authify/two_factor/new.html.erb")
 
     assert_includes two_factor_controller, "password_ok = current_user.authenticate(params[:password]).present?"
-    assert_includes two_factor_controller, "code_ok = credential.verify?(params[:code])"
+    assert_includes two_factor_controller, "credential.verify?(params[:code])"
     assert_includes two_factor_controller, "event_type: \"two_factor_disable_failed\""
     assert_includes two_factor_controller, "generate_recovery_codes!"
     assert_includes two_factor_view, "method: :delete"
@@ -189,7 +189,7 @@ class GeneratorIntegrationTest < Minitest::Test
     assert_equal 1, read_generated("app/views/layouts/application.html.erb").scan("authify/shared/flash").length
 
     run_generator(Authify::Generators::UpgradeGenerator)
-    migration_path = Dir[File.join(@tmpdir, "db/migrate/*_upgrade_authify_security_fields.rb")].first
+    migration_path = Dir[File.join(@tmpdir, "db/migrate/*_upgrade_authify_040_security_fields.rb")].first
     refute_nil migration_path
     migration = File.read(migration_path)
     assert_includes migration, "user_table = :users"
@@ -236,5 +236,86 @@ class GeneratorIntegrationTest < Minitest::Test
       class ApplicationController < ActionController::Base
       end
     RUBY
+  end
+end
+
+class GeneratorIntegrationTest
+  def test_legacy_upgrade_preserves_customizations_and_preview_is_read_only
+    run_generator(Authify::Generators::InstallGenerator, ["--skip-bundle", "--user-model=Member", "--views=plain"])
+    manifest_path = File.join(@tmpdir, "config/authify.yml")
+    data = YAML.safe_load_file(manifest_path)
+    data["version"] = "0.3.0"
+    data.delete("files")
+    File.write(manifest_path, YAML.dump(data))
+    legacy = Authify::TemplateCatalog.new(user_model: "Member", views: "plain", features: [:core], legacy: true).files
+    legacy.each do |path, content|
+      FileUtils.mkdir_p(File.dirname(File.join(@tmpdir, path)))
+      File.write(File.join(@tmpdir, path), content)
+    end
+    path = File.join(@tmpdir, "app/controllers/authify/sessions_controller.rb")
+    File.open(path, "a") { |file| file.puts "# application's custom sign-in hook" }
+    before = snapshot_app
+    run_generator(Authify::Generators::UpgradeGenerator, ["--dry-run"])
+    assert_equal before, snapshot_app
+    run_generator(Authify::Generators::UpgradeGenerator)
+    assert_includes File.read(path), "# application's custom sign-in hook"
+    assert_includes read_generated("app/controllers/concerns/authify/current_session.rb"), "record.user.disabled_at.present?"
+    assert_equal "0.4.0", YAML.safe_load_file(manifest_path)["version"]
+    after = snapshot_app
+    run_generator(Authify::Generators::UpgradeGenerator)
+    assert_equal after, snapshot_app
+  end
+
+  def test_upgrade_conflict_preserves_every_application_file_and_version
+    run_generator(Authify::Generators::InstallGenerator, ["--skip-bundle"])
+    manifest_path = File.join(@tmpdir, "config/authify.yml")
+    data = YAML.safe_load_file(manifest_path)
+    data["version"] = "0.3.0"
+    data.delete("files")
+    File.write(manifest_path, YAML.dump(data))
+    path = File.join(@tmpdir, "app/controllers/concerns/authify/current_session.rb")
+    File.write(path, "# completely customized session management\n")
+    before = snapshot_app
+    run_generator(Authify::Generators::UpgradeGenerator)
+    assert_equal before, snapshot_app
+    assert File.exist?(File.join(@tmpdir, ".authify/upgrade/app/controllers/concerns/authify/current_session.rb.proposed"))
+    assert_equal "0.3.0", YAML.safe_load_file(manifest_path)["version"]
+  end
+
+  def test_plain_views_do_not_include_tailwind_classes
+    run_generator(Authify::Generators::InstallGenerator, ["--skip-bundle", "--views=plain"])
+    refute_includes read_generated("app/views/authify/sessions/new.html.erb"), "class:"
+    refute_includes read_generated("app/views/authify/sessions/new.html.erb"), 'class="'
+  end
+
+  def test_adding_a_feature_keeps_the_installed_custom_user_model
+    run_generator(Authify::Generators::InstallGenerator, ["--skip-bundle", "--user-model=Member"])
+    run_generator(Authify::Generators::InstallGenerator, ["--skip-bundle", "--api"])
+    assert_includes read_generated("app/models/member.rb"), "has_many :authify_api_tokens"
+    refute File.exist?(File.join(@tmpdir, "app/models/user.rb")) && read_generated("app/models/user.rb").include?("authify_api_tokens")
+    assert_equal "Member", YAML.safe_load_file(File.join(@tmpdir, "config/authify.yml"))["user_model"]
+  end
+
+  private
+  def snapshot_app
+    Dir[File.join(@tmpdir, "**/*")].select { |p| File.file?(p) }.to_h { |p| [p.delete_prefix(@tmpdir), File.binread(p)] }
+  end
+end
+
+class GeneratorIntegrationTest
+  def test_no_view_install_does_not_generate_optional_pages_or_inject_flash
+    run_generator(Authify::Generators::InstallGenerator, ["--all", "--skip-bundle", "--views=none"])
+    assert_empty Dir[File.join(@tmpdir, "app/views/authify/**/*.erb")]
+    refute_includes read_generated("app/views/layouts/application.html.erb"), "authify/shared/flash"
+  end
+end
+
+class GeneratorIntegrationTest
+  def test_existing_authentication_stops_installation_before_writes
+    File.write(File.join(@tmpdir, "app/models/user.rb"), "class User < ApplicationRecord\n  has_secure_password\nend\n")
+    before = snapshot_app
+    run_generator(Authify::Generators::InstallGenerator, ["--skip-bundle"])
+    assert_equal before, snapshot_app
+    refute File.exist?(File.join(@tmpdir, "config/authify.yml"))
   end
 end

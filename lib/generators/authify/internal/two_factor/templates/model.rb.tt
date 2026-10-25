@@ -5,7 +5,19 @@ class AuthifyTwoFactorCredential < ApplicationRecord
   encrypts :secret_ciphertext
 
   def verify?(code)
-    ROTP::TOTP.new(secret_ciphertext).verify(code.to_s, drift_behind: 30, drift_ahead: 30).present?
+    return false if secret_ciphertext.blank?
+
+    accepted = false
+    with_lock do
+      timestep = ROTP::TOTP.new(secret_ciphertext).verify(
+        code.to_s, drift_behind: 30, drift_ahead: 30, after: last_accepted_at
+      )
+      if timestep
+        update!(last_accepted_at: timestep)
+        accepted = true
+      end
+    end
+    accepted
   end
 
   def generate_recovery_codes!

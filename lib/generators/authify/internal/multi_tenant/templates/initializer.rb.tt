@@ -1,0 +1,8 @@
+# Configure a trusted resolver BEFORE enabling tenant authentication. Resolve from
+# your authenticated organization/subdomain middleware, never a submitted tenant ID.
+Authify.configure do |config|
+  config.tenant_key = :tenant_id
+  config.tenant_resolver = ->(request) { request.env["authify.tenant_id"] }
+  # Enable only after backfilling users. Requests without tenant context fail closed.
+  config.tenant_enabled = ENV["AUTHIFY_TENANT_ENABLED"] == "true"
+end

@@ -5,7 +5,9 @@ module Authify
     included do
       include Authify::CurrentSession
       helper_method :current_user, :authenticated?
+      before_action :authify_set_tenant
       before_action :authify_resume_session
+      rescue_from Authify::MissingTenant, with: -> { head :forbidden }
       class_attribute :authify_public_actions, default: []
     end
 
@@ -21,6 +23,10 @@ module Authify
 
     private
 
+    def authify_set_tenant
+      Current.authify_tenant_id = Authify.resolve_tenant(request)
+    end
+
     def current_user
       Current.user
     end
@@ -31,7 +37,7 @@ module Authify
 
     def authify_require_authentication
       return if authenticated?
-      session[:authify_return_to] = request.fullpath if request.get?
+      session[:authify_return_to] = request.fullpath if request.get? || request.head?
       redirect_to new_session_path, alert: "Please sign in to continue."
     end
   end

@@ -1,0 +1,6 @@
+<%% content_for :preheader, "Confirm your email address to finish setting up your account." %>
+<h1 style="margin:0 0 16px;font-size:26px;line-height:1.25;">Confirm your email address</h1>
+<p style="margin:0 0 16px;color:#374151;line-height:1.7;">Welcome to <strong><%%= @app_name %></strong>. Please confirm that <strong><%%= @user.email %></strong> is your email address.</p>
+<p style="margin:24px 0;"><a href="<%%= @action_url %>" style="display:inline-block;background:<%%= Authify.configuration.primary_color %>;color:#fff;text-decoration:none;font-weight:700;padding:13px 20px;border-radius:10px;">Verify my email address</a></p>
+<p style="margin:0 0 16px;color:#4b5563;font-size:14px;line-height:1.7;">This link expires in <%%= distance_of_time_in_words(Authify.configuration.email_verification_ttl) %>. If you did not create this account, you can safely ignore this email.</p>
+<p style="margin:0;color:#6b7280;font-size:13px;word-break:break-all;">Button not working? Copy and paste this link:<br><a href="<%%= @action_url %>" style="color:#374151;"><%%= @action_url %></a></p>

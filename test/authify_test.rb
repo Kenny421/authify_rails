@@ -55,7 +55,7 @@ class AuthifyTest < Minitest::Test
     content = read_template("lib/generators/authify/upgrade/templates/compatibility_migration.rb.tt")
 
     assert_includes content, "unless column_exists?"
-    assert_includes content, "unless index_name_exists?"
+    assert_includes content, "Authify::Schema.ensure_user!"
     assert_includes content, ":authentication_method"
     assert_includes content, ":remembered"
     refute_includes content, "remove_column"
@@ -144,7 +144,7 @@ class AuthifyTest < Minitest::Test
     content = read_template("lib/generators/authify/internal/two_factor/templates/controller.rb.tt")
 
     assert_includes content, "password_ok = current_user.authenticate(params[:password]).present?"
-    assert_includes content, "code_ok = credential.verify?(params[:code])"
+    assert_includes content, "credential.verify?(params[:code])"
     assert_includes content, "event_type: \"two_factor_disable_failed\""
     assert_includes content, "generate_recovery_codes!"
   end

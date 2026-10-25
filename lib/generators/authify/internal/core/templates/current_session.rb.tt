@@ -7,7 +7,12 @@ module Authify
       return if raw.blank?
       record = Authify.configuration.session_class.find_by(token_digest: Authify::Token.digest(raw))
       return authify_clear_cookie unless record&.active?
-      if Authify.configuration.email_verification_required && !record.user.email_verified?
+      if Authify.configuration.tenant_enabled && !Authify.user_scope.where(id: record.user_id).exists?
+        authify_clear_cookie
+        Current.user = Current.authify_session = nil
+        return
+      end
+      if record.user.disabled_at.present? || (Authify.configuration.email_verification_required && !record.user.email_verified?)
         record.revoke!
         authify_clear_cookie
         Current.reset

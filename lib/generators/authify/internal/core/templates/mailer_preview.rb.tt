@@ -47,6 +47,6 @@ class AuthifyMailerPreview < ActionMailer::Preview
   private
 
   def preview_user
-    Authify.configuration.user_class.first || Authify.configuration.user_class.new(email: "person@example.com")
+    Authify.configuration.user_class.first || Authify.user_scope.new(email: "person@example.com")
   end
 end

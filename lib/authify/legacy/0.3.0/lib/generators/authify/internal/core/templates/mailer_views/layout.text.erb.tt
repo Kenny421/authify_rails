@@ -1,0 +1,8 @@
+<%%= Authify.configuration.app_name %>
+
+<%%= yield %>
+
+---
+<%%= Authify.configuration.email_footer %>
+<%% if Authify.configuration.support_email.present? %>Need help? <%%= Authify.configuration.support_email %><%% end %>
+© <%%= Time.current.year %> <%%= Authify.configuration.company_name %>

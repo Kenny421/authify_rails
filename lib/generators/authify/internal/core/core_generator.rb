@@ -54,6 +54,7 @@ module Authify
         end
 
         def create_home_page
+          return if options[:views] == "none"
           controller = "app/controllers/home_controller.rb"
           view = "app/views/home/index.html.erb"
 
@@ -75,7 +76,7 @@ module Authify
 
         def create_views
           return if options[:views] == "none"
-          directory "views", "app/views/authify"
+          directory(options[:views] == "plain" ? "plain_views" : "views", "app/views/authify")
         end
 
         def add_routes
@@ -114,6 +115,7 @@ module Authify
         end
 
         def add_root_route
+          return if options[:views] == "none"
           routes_path = File.join(destination_root, "config/routes.rb")
           routes = File.exist?(routes_path) ? File.read(routes_path) : ""
           return say_status(:identical, "existing root route") if routes.match?(/^\s*root(?:\s|\()/)
@@ -133,6 +135,8 @@ module Authify
 
         def create_security_tests
           template "tests/security_flows_test.rb.tt", "test/integration/authify_security_flows_test.rb"
+          template "tests/hardening_test.rb.tt", "test/integration/authify_hardening_test.rb"
+          template "tests/concurrency_test.rb.tt", "test/integration/authify_concurrency_test.rb"
         end
 
         private

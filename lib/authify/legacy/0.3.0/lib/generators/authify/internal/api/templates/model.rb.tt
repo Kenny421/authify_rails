@@ -1,0 +1,13 @@
+class AuthifyApiToken < ApplicationRecord
+  belongs_to :user, class_name: Authify.configuration.user_class_name
+
+  def self.issue!(user:, name:, scopes: [], expires_at: nil)
+    raw, digest = Authify::Token.generate
+    token = create!(user: user, name: name, scopes: scopes, expires_at: expires_at, token_prefix: raw.first(10), token_digest: digest)
+    [token, "authify_live_#{raw}"]
+  end
+
+  def active?
+    revoked_at.nil? && (expires_at.nil? || expires_at.future?)
+  end
+end

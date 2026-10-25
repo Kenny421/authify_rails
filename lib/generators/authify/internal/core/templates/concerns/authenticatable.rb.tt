@@ -6,9 +6,11 @@ module Authify
       has_many :authify_sessions, foreign_key: :user_id, dependent: :destroy
       has_many :authentication_events, foreign_key: :user_id, dependent: :destroy
       normalizes :email, with: ->(value) { value.to_s.strip.downcase }
-      validates :email, presence: true, uniqueness: { case_sensitive: false }
+      validates :email, presence: true
+      validates :email, uniqueness: { case_sensitive: false }, unless: -> { Authify.configuration.tenant_enabled }
+      validate :authify_tenant_email_available, if: -> { Authify.configuration.tenant_enabled }
       validates :pending_email, format: { with: URI::MailTo::EMAIL_REGEXP }, allow_blank: true
-      validates :pending_email, uniqueness: { case_sensitive: false }, allow_blank: true
+      validates :pending_email, uniqueness: { case_sensitive: false }, allow_blank: true, unless: -> { Authify.configuration.tenant_enabled }
       validate :authify_pending_email_available
 
       before_create :authify_prepare_email_verification
@@ -23,12 +25,14 @@ module Authify
     end
 
     def record_failed_login!
-      next_count = failed_login_attempts.to_i + 1
-      attrs = { failed_login_attempts: next_count }
-      if next_count >= Authify.configuration.maximum_login_attempts
-        attrs[:locked_until] = Authify.configuration.lockout_duration.from_now
+      with_lock do
+        next_count = failed_login_attempts.to_i + 1
+        attrs = { failed_login_attempts: next_count }
+        if next_count >= Authify.configuration.maximum_login_attempts
+          attrs[:locked_until] = Authify.configuration.lockout_duration.from_now
+        end
+        update_columns(**attrs, updated_at: Time.current)
       end
-      update_columns(**attrs, updated_at: Time.current)
     end
 
     def clear_failed_logins!
@@ -90,12 +94,27 @@ module Authify
 
     private
 
+    def authify_tenant_email_available
+      key = Authify.configuration.tenant_key
+      errors.add(key, "is required") if self[key].blank?
+      scope = self.class.where(key => self[key]).where("LOWER(email) = ?", email.to_s.downcase)
+      scope = scope.where.not(id: id) if persisted?
+      errors.add(:email, "is already in use") if scope.exists?
+    end
+
     def authify_pending_email_available
       return if pending_email.blank?
 
       scope = self.class.where("LOWER(email) = ?", pending_email.downcase)
+      scope = scope.where(Authify.configuration.tenant_key => self[Authify.configuration.tenant_key]) if Authify.configuration.tenant_enabled
       scope = scope.where.not(id: id) if persisted?
-      errors.add(:pending_email, "is already in use") if scope.exists?
+      unavailable = scope.exists?
+      if Authify.configuration.tenant_enabled
+        pending = self.class.where(Authify.configuration.tenant_key => self[Authify.configuration.tenant_key]).where("LOWER(pending_email) = ?", pending_email.downcase)
+        pending = pending.where.not(id: id) if persisted?
+        unavailable ||= pending.exists?
+      end
+      errors.add(:pending_email, "is already in use") if unavailable
     end
 
     def authify_prepare_email_verification

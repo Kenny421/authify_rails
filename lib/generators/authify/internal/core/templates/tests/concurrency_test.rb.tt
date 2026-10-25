@@ -1,0 +1,49 @@
+require "test_helper"
+
+class AuthifyConcurrencyTest < ActionDispatch::IntegrationTest
+  self.use_transactional_tests = false
+
+  setup do
+    skip "Row-lock concurrency coverage runs on PostgreSQL" unless ActiveRecord::Base.connection.adapter_name == "PostgreSQL"
+    Authify.configuration.pwned_password_check = false
+    Authify.configuration.email_notifications_enabled = false
+    Authify.configuration.tenant_enabled = false
+    @user = Authify.configuration.user_class.create!(email: "concurrent-#{SecureRandom.hex(5)}@example.com", password: "correct-password-123", email_verified_at: Time.current)
+  end
+
+  teardown do
+    @user&.destroy!
+  end
+
+  test "two requests cannot consume one password reset token" do
+    token = @user.issue_password_reset!
+    ready, start = Queue.new, Queue.new
+    threads = 2.times.map do |index|
+      Thread.new do
+        ready << true
+        start.pop
+        client = ActionDispatch::Integration::Session.new(Rails.application)
+        client.patch "/reset-password/#{token}", params: { user: { password: "replacement-password-#{index}", password_confirmation: "replacement-password-#{index}" } }
+        URI.parse(client.response.location).path
+      end
+    end
+    2.times { ready.pop }
+    2.times { start << true }
+    assert_equal ["/forgot-password", "/sign-in"], threads.map(&:value).sort
+    assert_nil @user.reload.password_reset_token_digest
+  end
+
+  test "simultaneous failed attempts all count toward account lockout" do
+    id = @user.id
+    threads = 8.times.map do
+      Thread.new do
+        ActiveRecord::Base.connection_pool.with_connection do
+          Authify.configuration.user_class.find(id).record_failed_login!
+        end
+      end
+    end
+    threads.each(&:value)
+    assert_equal 8, @user.reload.failed_login_attempts
+    assert @user.locked?
+  end
+end

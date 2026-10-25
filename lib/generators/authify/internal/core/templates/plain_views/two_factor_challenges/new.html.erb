@@ -1,0 +1,11 @@
+<div>
+  <h1>Two-factor authentication</h1>
+  <p>Enter a code from your authenticator app or a recovery code.</p>
+  <%= form_with url: two_factor_challenge_path do |form| %>
+    <div>
+      <%= form.label :code, "Authenticator or recovery code" %>
+      <%= form.text_field :code, required: true, autofocus: true, inputmode: "numeric", autocomplete: "one-time-code" %>
+    </div>
+    <%= form.submit "Verify and sign in" %>
+  <% end %>
+</div>

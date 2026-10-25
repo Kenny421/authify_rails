@@ -1,6 +1,23 @@
 # Changelog
 
-## 0.3.0 - Unreleased
+## 0.4.0 - Unreleased
+
+- Added previewable template-aware upgrades, versioned baselines, conflict proposals,
+  repeat-run protection and validation history while preserving application-owned files.
+- Added non-destructive existing-user schema preparation and guarded compatibility migrations.
+- Fixed disabled-account sessions, reset-token races, reset-link invalidation,
+  TOTP replay and concurrent lost login-attempt increments.
+- Completed Bearer API authentication, scope allowlists, revocation and tenant checks.
+- Added opt-in WebAuthn passkeys with browser controls, user verification,
+  single-use expiring challenges and device-management endpoints.
+- Added explicitly activated tenant authentication, trusted request resolution and
+  a separately reviewed tenant-index conversion generator.
+- Added plain views and consistent no-view feature installs; preserved custom model options.
+- Fixed SQLite CI setup and OAuth test middleware usage; refreshed audited dependencies.
+- Added generated behavior/concurrency tests and an actual 0.3.0 upgrade smoke workflow.
+- Removed Windows download metadata from packaged/generated files.
+
+## 0.3.0
 
 - Added friendly authentication routes, starter home page, and accessible flash rendering.
 - Added staged TOTP challenges with hashed, single-use recovery codes and secure regeneration.

@@ -1,0 +1,1 @@
+<div class="p-6"><h1 class="text-2xl font-bold">Authentication events</h1><table class="mt-6 w-full"><%% @events.each do |event| %><tr><td><%%= event.created_at %></td><td><%%= event.event_type %></td><td><%%= event.user_id %></td><td><%%= event.ip_address %></td></tr><%% end %></table></div>

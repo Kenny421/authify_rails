@@ -1,0 +1,88 @@
+module Authify
+  class SessionsController < ApplicationController
+    DUMMY_PASSWORD_DIGEST = BCrypt::Password.create(SecureRandom.base58(48)).to_s.freeze
+
+    rate_limit to: 10, within: 3.minutes, only: :create,
+               with: -> { redirect_to new_session_path, alert: "Too many sign-in attempts. Try again later." }
+
+    def new; end
+
+    def create
+      user = Authify.configuration.user_class.find_by(email: params[:email].to_s.strip.downcase)
+      authenticated = if user
+                        user.authenticate(params[:password]).present?
+                      else
+                        BCrypt::Password.new(DUMMY_PASSWORD_DIGEST).is_password?(params[:password].to_s)
+                        false
+                      end
+
+      if authenticated && user.locked?
+        redirect_to new_session_path, alert: "Unable to sign in with those credentials."
+      elsif authenticated && user.disabled_at.present?
+        redirect_to new_session_path, alert: "Unable to sign in with those credentials."
+      elsif authenticated
+        if Authify.configuration.email_verification_required && !user.email_verified?
+          return redirect_to(
+            new_email_verification_path,
+            alert: "Verify your email address before signing in."
+          )
+        end
+
+        credential = active_two_factor_credential_for(user)
+        if credential
+          session[:authify_pending_two_factor] = {
+            user_id: user.id,
+            remember: params[:remember_me] == "1",
+            authentication_method: "password",
+            started_at: Time.current.to_i
+          }
+          return redirect_to new_two_factor_challenge_path
+        end
+
+        complete_sign_in(user, remember: params[:remember_me] == "1")
+      else
+        user&.record_failed_login!
+        AuthenticationEvent.create!(user: user, event_type: "sign_in_failed", ip_address: request.remote_ip, user_agent: request.user_agent)
+        redirect_to new_session_path, alert: "Unable to sign in with those credentials."
+      end
+    end
+
+    def destroy
+      authify_end_session
+      redirect_to Authify.configuration.after_sign_out_path, notice: "Signed out."
+    end
+
+    private
+
+    def complete_sign_in(user, remember:)
+      user.clear_failed_logins!
+      user.update_column(:last_signed_in_at, Time.current)
+      return_to = session[:authify_return_to]
+      authify_start_session(user, remember: remember, authentication_method: "password")
+      unique_sign_in = AuthenticationEvent.unique_sign_in_for?(
+        user: user,
+        ip_address: request.remote_ip,
+        user_agent: request.user_agent
+      )
+      user.authentication_events.create!(event_type: "sign_in_succeeded", ip_address: request.remote_ip, user_agent: request.user_agent)
+      if unique_sign_in && Authify.configuration.email_notifications_enabled && Authify.configuration.new_sign_in_notifications
+        Authify.configuration.mailer_class.with(
+          user: user,
+          ip_address: request.remote_ip,
+          user_agent: request.user_agent,
+          signed_in_at: Time.current
+        ).new_sign_in.deliver_later
+      end
+      redirect_to return_to || Authify.configuration.after_sign_in_path
+    end
+
+    def active_two_factor_credential_for(user)
+      return unless user.respond_to?(:authify_two_factor_credential)
+
+      credential = user.authify_two_factor_credential
+      return unless credential&.confirmed_at.present? && credential.disabled_at.blank?
+
+      credential
+    end
+  end
+end

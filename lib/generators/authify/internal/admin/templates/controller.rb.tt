@@ -3,7 +3,11 @@ module Authify
     class AuthenticationEventsController < ::ApplicationController
       require_authentication
       before_action :require_authify_admin
-      def index = @events = AuthenticationEvent.order(created_at: :desc).limit(500)
+      def index
+        scope = AuthenticationEvent.all
+        scope = scope.where(user_id: Authify.user_scope.select(:id)) if Authify.configuration.tenant_enabled
+        @events = scope.order(created_at: :desc).limit(500)
+      end
       private
       def require_authify_admin
         head :forbidden unless current_user.respond_to?(:has_role?) && current_user.has_role?(:admin)

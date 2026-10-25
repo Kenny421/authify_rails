@@ -1,0 +1,95 @@
+module Authify
+  class EmailChangesController < ApplicationController
+    require_authentication only: %i[edit update destroy]
+    rate_limit to: 5, within: 1.hour, only: %i[update destroy],
+               with: -> { redirect_to edit_account_email_path, alert: "Too many email change attempts. Try again later." }
+    rate_limit to: 10, within: 3.minutes, only: :show,
+               with: -> { redirect_to new_session_path, alert: "Too many confirmation attempts. Try again later." }
+    before_action :require_sensitive_authentication, only: %i[update destroy]
+
+    def edit
+      @user = current_user
+    end
+
+    def update
+      @user = current_user
+      token = @user.request_email_change!(email_params[:email])
+      Authify.configuration.mailer_class.with(user: @user, token: token).email_change_verification.deliver_later
+      Authify.configuration.mailer_class.with(user: @user).email_change_requested.deliver_later
+      @user.authentication_events.create!(event_type: "email_change_requested")
+      redirect_to edit_account_email_path, notice: "Check the new email address to confirm the change."
+    rescue ActiveRecord::RecordInvalid
+      render :edit, status: :unprocessable_entity
+    end
+
+    def destroy
+      current_user.cancel_email_change!
+      current_user.authentication_events.create!(event_type: "email_change_cancelled")
+      redirect_to edit_account_email_path, notice: "Pending email change cancelled."
+    end
+
+    def show
+      user = Authify.configuration.user_class.find_by(
+        email_change_token_digest: Authify::Token.digest(params[:token])
+      )
+      return invalid_token unless user&.email_change_token_valid?(params[:token])
+
+      previous_email = user.email
+      user.with_lock do
+        raise ActiveRecord::RecordInvalid, user unless user.email_change_token_valid?(params[:token])
+
+        user.update!(
+          email: user.pending_email,
+          email_verified_at: Time.current,
+          pending_email: nil,
+          email_change_token_digest: nil,
+          email_change_sent_at: nil
+        )
+        user.authify_sessions.update_all(revoked_at: Time.current)
+        user.authentication_events.create!(
+          event_type: "email_changed"
+        )
+      end
+      Authify.configuration.mailer_class.with(
+        user: user, recipient: previous_email, previous_email: previous_email
+      ).email_changed.deliver_later
+      Authify.configuration.mailer_class.with(
+        user: user, recipient: user.email, previous_email: previous_email
+      ).email_changed.deliver_later
+
+      redirect_to new_session_path, notice: "Email address updated. Please sign in again."
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique
+      invalid_token
+    end
+
+    private
+
+    def email_params
+      params.require(:user).permit(:email)
+    end
+
+    def require_sensitive_authentication
+      return if recent_sudo_authentication?
+      return if recent_provider_authentication?
+      return if current_user.authenticate(params[:current_password])
+
+      redirect_to edit_account_email_path, alert: "Current password is incorrect."
+    end
+
+    def recent_sudo_authentication?
+      record = Current.authify_session
+      record&.respond_to?(:sudo_expires_at) && record.sudo_expires_at&.future?
+    end
+
+    def recent_provider_authentication?
+      record = Current.authify_session
+      record&.respond_to?(:authentication_method) &&
+        record.authentication_method.to_s.start_with?("oauth:") &&
+        record.created_at >= Authify.configuration.sudo_timeout.ago
+    end
+
+    def invalid_token
+      redirect_to new_session_path, alert: "Email change link is invalid or expired."
+    end
+  end
+end

@@ -1,0 +1,8 @@
+module Authify
+  module TenantScoped
+    extend ActiveSupport::Concern
+    included do
+      validates :email, uniqueness: { scope: :tenant_id, case_sensitive: false }
+    end
+  end
+end
