@@ -1,342 +1,307 @@
 # Authify Rails
 
-Authify Rails installs secure, editable authentication into a Rails 8 application with one generator. The default installation provides a complete browser-authentication foundation, while optional features can be added together during the first install or later by rerunning the same generator.
+Authify Rails generates editable authentication code for Rails 8: registration,
+password sign-in, email verification, password recovery, sessions, security emails,
+and optional MFA, passkeys, OAuth, API tokens, roles, and tenant isolation.
 
-> Status: pre-1.0. Review generated code and test it in your application before production use.
+**Status:** 0.4.0 is under review. Test generated changes in your application before
+production use. Updating the gem does not update code already generated in an app.
 
-## What Authify installs
+## Setup guide
 
-The basic command installs:
-
-- User registration
-- Email and password sign-in
-- A staged two-factor sign-in challenge shown only to users with active 2FA
-- Sign-out and remember-me sessions
-- Password reset with single-use digested tokens
-- Authenticated password changes with current-password confirmation and global session revocation
-- Email verification
-- Verification enforcement that blocks sign-in and revokes sessions until the email is verified
-- Safe email changes that remain pending until the new address is verified
-- Sensitive email-change confirmation, rate limits, cancellation, security notifications, and session revocation
-- Database-backed session and device management
-- Idle and absolute session expiration
-- Session revocation
-- Login failure tracking and temporary account lockout
-- Authentication event logging
-- `bcrypt` password hashing through `has_secure_password`
-- Pwned Passwords checking through the k-anonymity range API
-- Editable mailers and views
-- Accessible notice and alert rendering in the application layout
-- A starter `HomeController#index` page and root route when the app does not already have them
-- Tailwind-ready responsive pages
-- `authify:doctor` and `authify:version` tasks
-- An installation manifest at `config/authify.yml`
-
-Optional features:
-
-- `--oauth` — Google and Facebook sign-in, with support for other OmniAuth providers
-- `--roles` — simple role assignments
-- `--two-factor` — TOTP authenticator-app enrollment with single-use recovery codes
-- `--api` — digested personal API tokens, Bearer authentication and explicit scopes
-- `--sudo` — step-up authentication for sensitive actions
-- `--admin` — authentication-event administration page; requires roles
-- `--passkeys` — WebAuthn registration, sign-in, management and browser controls
-- `--multi-tenant` — tenant preparation with explicit activation and a trusted resolver
-- `--all` — all optional features
+- [Upgrade an existing app](#upgrade-an-existing-app)
+- [Install in a new app or add features](#install-in-a-new-app-or-add-features)
+- [Know where settings belong](#know-where-settings-belong)
+- [Configure email and application security](#configure-email-and-application-security)
+- [Set up MFA and sudo](#set-up-mfa-and-sudo)
+- [Set up bot protection with Turnstile](#set-up-bot-protection-with-turnstile)
+- [Set up passkeys](#set-up-passkeys)
+- [Set up API tokens](#set-up-api-tokens)
+- [Set up OAuth](#set-up-oauth)
+- [Set up roles and tenants](#set-up-roles-and-tenants)
+- [Configure Kamal deployments](#configure-kamal-deployments)
+- [Test, monitor, and clean up](#test-monitor-and-clean-up)
+- [Troubleshooting](#troubleshooting)
 
 ## Requirements
 
-- Ruby 3.2 or newer
-- Rails 8.0 or newer
-- Active Record
-- A Rails application using cookies for browser sessions
+- Rails 8.0 or newer, below Rails 9.
+- Ruby 3.2 or newer for compatibility; use a maintained release such as Ruby 3.4
+  for deployment. Ruby 3.2 compatibility testing does not make that end-of-life
+  runtime suitable for production.
+- Active Record and browser cookies/sessions.
+- SQLite or PostgreSQL for the generated database abuse counters; both are tested.
+- Git for three-way merging of customized generated files during upgrades.
 
-Authify currently targets Rails 8 migrations. Confirm compatibility before using it with another Rails version.
+Authify does not install a mail provider, configure your deployment secrets,
+replace authorization policies, or automatically migrate Devise/other auth systems.
 
-## Upgrading an existing installation
+## Upgrade an existing app
 
-Read [UPGRADING.md](UPGRADING.md) before updating an existing app. Version 0.4.0
-adds a read-only preview and template-aware merge process:
+Run these commands **inside your Rails application's folder**, not the gem's folder.
+Commit your current app changes and back up any important database before starting.
+Use a development/staging database and separate test database for this walkthrough.
+
+### 1. Select the reviewed code
+
+```bash
+git status --short
+git switch -c test/authify-upgrade
+```
+
+Resolve or commit outstanding changes first. Replace the existing Authify entry
+in the app's `Gemfile` with this exact reviewed revision; do not add a second entry:
+
+```ruby
+gem "authify_rails",
+    git: "https://github.com/Kenny421/authify_rails.git",
+    ref: "bc230e093ddb8fc52ddadada612a65833af175a0"
+```
+
+This pins the tested code from [PR #1](https://github.com/Kenny421/authify_rails/pull/1).
+It does not assume that the unreleased changes are available from RubyGems or `main`.
+When intentionally testing later branch work, replace `ref:` with
+`branch: "feat/safe-authify-upgrades"`; a branch follows changing code.
+
+```bash
+bundle update authify_rails
+```
+
+### 2. Preview and apply generated changes
 
 ```bash
 bin/rails generate authify:upgrade --dry-run
 bin/rails generate authify:upgrade
+git diff
 ```
 
-Conflicts block all application-file updates and produce reviewable proposals.
-Custom branding and integration files remain application-owned. New installs stop
-before writes when common existing authentication integrations or route conflicts
-are detected; review those migrations explicitly.
+The preview writes nothing. Conflicts stop application-file updates and leave
+proposals under `.authify/upgrade/`, preserving directories. Review and resolve
+conflicts, then rerun the generator. Never apply a file with merge markers.
 
-## Installation
+The upgrade preserves your routes, User model, ApplicationController, layout,
+Gemfile, branding initializer, and OAuth credentials initializer. Review custom
+views and integrations against the proposals. Keep `config/authify.yml`: it holds
+installation metadata and template baselines. Do not rerun the installer to repair
+missing metadata or manually change the recorded version to bypass an upgrade.
 
-Add the gem:
+### 3. Migrate and validate
 
-```ruby
-gem "authify_rails"
+After reviewing the diff, run:
+
+```bash
+bin/rails db:migrate
+RAILS_ENV=test bin/rails db:prepare
+bin/rails authify:doctor
+bin/rails test
 ```
 
-For local development:
+Check that any `DATABASE_URL` points to the intended database before database
+commands. Follow the configuration sections below if doctor reports missing keys,
+mailer settings, or provider configuration. Then start the app:
 
-```ruby
-gem "authify_rails", path: "../authify_rails"
+```bash
+bin/dev
+# If the app has no bin/dev, use: bin/rails server
 ```
 
-Then run:
+Even if earlier 0.4.0 migrations ran, apply the generated
+`HardenAuthifyCredentials` migration. It adds credential-version/proof fields and
+single-use MFA challenges. Keep old workers from serving the new code against an
+unmigrated database; coordinate migrations and replacement of all workers.
+
+Important behavior changes to test:
+
+- Password/email/factor changes and tenant transfers invalidate earlier browser
+  sessions, API tokens, and pending sign-ins. Recreate affected API tokens.
+- Sensitive enrollment and token creation require explicit identity confirmation;
+  a newly created login session alone is insufficient.
+- OAuth no longer links an existing account automatically by matching email.
+- Recovery codes are shown once in the response, not stored in the session cookie.
+- Intrinsic MFA and identity-confirmation budgets apply even in observation mode.
+
+See [UPGRADING.md](UPGRADING.md) for baseline compatibility, migration details,
+interrupted upgrades, and rollback planning. Older/unrecognized custom installations
+need manual review rather than guessed baselines.
+
+## Install in a new app or add features
+
+To test this revision in a new app, use the same pinned Git entry above, then:
 
 ```bash
 bundle install
-bin/rails generate authify:install
-bin/rails db:migrate
-bin/rails authify:doctor
-```
-
-The default installation adds `bcrypt` to the host application's Gemfile and runs `bundle install`. Use `--skip-bundle` when dependency installation is managed separately.
-
-### Google and Facebook sign-in
-
-Install OAuth support at initial setup or add it later:
-
-```bash
-bin/rails generate authify:install --oauth
-bin/rails db:migrate
-```
-
-The generator installs OmniAuth, its Rails CSRF protection, and the Google and Facebook strategies. Set these environment variables:
-
-```text
-GOOGLE_CLIENT_ID
-GOOGLE_CLIENT_SECRET
-FACEBOOK_APP_ID
-FACEBOOK_APP_SECRET
-```
-
-Register these callback URLs with the providers, replacing the host with your application's HTTPS origin:
-
-```text
-https://example.com/auth/google_oauth2/callback
-https://example.com/auth/facebook/callback
-```
-
-Authify creates an `AuthifyOauthIdentity` for each provider account. A returning user is found by provider and provider UID. A new identity is linked to an existing email account, or creates an account, only when the provider reports that the email is verified. Provider authorization starts with POST requests protected by `omniauth-rails_csrf_protection`.
-
-To add GitHub, Microsoft, or another provider, add its OmniAuth strategy gem and a `provider` entry in `config/initializers/authify_oauth.rb`. The generated callback and identity model are provider-agnostic; providers that do not expose verification in `extra.raw_info.email_verified` or `extra.raw_info.verified` need an application-specific verification rule.
-
-## Recommended rollout
-
-For most browser-first Rails applications, use this sequence:
-
-1. Start with core plus two-factor and sudo mode:
-
-```bash
 bin/rails generate authify:install --two-factor --sudo
 bin/rails db:migrate
-bin/rails authify:doctor
 ```
 
-2. Add roles only when authorization tiers are real product needs:
+Configure email and encryption below before running doctor. For core authentication
+only, omit the feature flags. For every optional feature, use `--all` and configure
+each provider before deployment; tenant enforcement remains explicitly opt-in.
+
+| Flag | What it adds | Required setup |
+| --- | --- | --- |
+| `--two-factor` | TOTP enrollment and recovery codes | Active Record encryption keys |
+| `--sudo` | Explicit identity confirmation | Sensitive-action controller rules |
+| `--passkeys` | WebAuthn enrollment, sign-in, management | Trusted origins, RP ID, real-device testing |
+| `--api` | Digested Bearer tokens and scopes | Scope allowlist and resource authorization |
+| `--oauth` | OmniAuth strategies and callbacks | Provider credentials and verified-email policy |
+| `--roles` | Role assignments | Application-owned authorization rules |
+| `--admin` | Authentication-event viewer | Roles installed and trusted admin assignment |
+| `--multi-tenant` | Tenant column and resolver initializer | Trusted tenant resolution, backfill, reviewed indexes |
+| `--all` | All optional features | All applicable setup above |
+
+Add missing features later with the same installer; it skips installed features:
 
 ```bash
-bin/rails generate authify:install --roles
+bin/rails generate authify:install --passkeys --api
 bin/rails db:migrate
 ```
 
-3. Add admin after roles are present (`--admin` requires role support):
+Upgrade existing generated code first if the installer requests it. Installed user
+model and view mode are retained. `--admin` requires `--roles` unless roles already
+exist. The generator adds dependencies and runs Bundler unless `--skip-bundle` is set.
+
+For a first installation, custom options include:
 
 ```bash
-bin/rails generate authify:install --admin
-bin/rails db:migrate
+bin/rails generate authify:install --user-model=Account --views=plain
 ```
 
-4. Add API tokens only for applications that expose token-based access:
+Views can be `tailwind`, `plain`, or `none`. Tailwind mode assumes the host app
+already builds Tailwind CSS; choose `plain` otherwise. With `none`, build your own forms,
+including CSRF protection, challenge fields, and explicit confirmation inputs.
+Existing home files and root routes are preserved. Existing authentication
+integrations detected by preflight require an explicit migration plan.
+
+### Find the generated pages
 
 ```bash
-bin/rails generate authify:install --api
-bin/rails db:migrate
+bin/rails routes -g authify
 ```
 
-5. Add multi-tenant support only when the application already uses tenant-scoped data:
+| Page | Path |
+| --- | --- |
+| Sign in / register | `/sign-in` / `/sign-up` |
+| Request password reset | `/forgot-password` |
+| Request verification email | `/verify-email` |
+| Change password / email | `/account/password` / `/account/email` |
+| Session history and revocation | `/account/sessions` |
 
-```bash
-bin/rails generate authify:install --passkeys
---multi-tenant
+Optional feature paths are listed in their setup sections below.
+
+## Know where settings belong
+
+All paths in this guide refer to the **host Rails app**.
+
+| File or setting | Purpose |
+| --- | --- |
+| `config/initializers/authify.rb` | Branding, password/session policy, API scopes |
+| `config/initializers/authify_abuse.rb` | Observe/enforce mode and challenge adapter |
+| `config/initializers/authify_passkeys.rb` | WebAuthn trusted origins and RP ID |
+| `config/initializers/authify_oauth.rb` | OmniAuth providers and credentials |
+| `config/initializers/authify_tenant.rb` | Trusted tenant resolver and activation |
+| `config/credentials.yml.enc` or environment-specific credentials | Encrypted secrets and MFA encryption keys |
+| Deployment environment variables | Settings read by generated initializers |
+| `config/authify.yml` | Installation metadata; not a place for secrets |
+
+Restart Rails after changing initializers or environment variables. Exported shell
+variables apply only to processes launched from that shell. A `.env` file is not
+loaded automatically by Rails; use your existing loader or deployment secret store.
+
+The Turnstile, passkey, OAuth, and tenant initializers read environment variables
+by default. Adding values to Rails credentials alone does not connect them to
+these initializers. The optional credentials-based Turnstile example below shows
+how to wire credentials directly.
+
+## Configure email and application security
+
+### Mail delivery and HTTPS
+
+Set link generation in the appropriate environment file:
+
+```ruby
+# config/environments/development.rb
+config.action_mailer.default_url_options = { host: "localhost", port: 3000 }
 ```
-
-After enabling `--multi-tenant`, wire tenant associations and add tenant indexes manually to match the data model.
-
-## Production readiness checklist
-
-Before going live, complete the following in the host Rails app:
-
-1. Run install, migrate, and doctor:
-
-```bash
-bin/rails generate authify:install --two-factor --sudo
-bin/rails db:migrate
-bin/rails authify:doctor
-```
-
-2. Enforce transport security in production:
 
 ```ruby
 # config/environments/production.rb
 config.force_ssl = true
+config.action_mailer.default_url_options = {
+  host: "app.example.com", protocol: "https"
+}
 ```
 
-3. Configure mailer host and sender for security links and alerts:
+Configure your application's SMTP/provider adapter. For an SMTP provider, an
+example production configuration is:
 
 ```ruby
-# config/environments/production.rb
-config.action_mailer.default_url_options = { host: "app.example.com" }
+config.action_mailer.delivery_method = :smtp
+config.action_mailer.smtp_settings = {
+  address: ENV.fetch("SMTP_ADDRESS"),
+  port: ENV.fetch("SMTP_PORT", "587").to_i,
+  user_name: ENV.fetch("SMTP_USERNAME"),
+  password: ENV.fetch("SMTP_PASSWORD"),
+  authentication: :plain,
+  enable_starttls: true
+}
 ```
 
+Supply those variables through your secret manager and adapt TLS/authentication
+to your provider's instructions. Verify the sender/domain with that provider.
+Authify uses `deliver_later`: run the application's Active Job workers and confirm
+that verification and reset emails are actually delivered. Solid Queue users need
+a worker consuming the queue configured for Action Mailer.
+
+### Branding and security policy
+
+Edit the existing block in `config/initializers/authify.rb`:
+
 ```ruby
-# config/initializers/authify.rb
 Authify.configure do |config|
+  config.app_name = "My App"
+  config.company_name = "My Company"
   config.mailer_from = "security@app.example.com"
   config.support_email = "support@app.example.com"
+  config.logo_url = "https://app.example.com/logo-email.png"
+  config.primary_color = "#2563eb"
+
+  config.password_minimum_length = 12
+  config.password_maximum_length = 128
+  config.pwned_password_check = true
+  config.pwned_fail_closed = false
+  config.pwned_timeout = 3.seconds
+  config.email_verification_required = true
+
+  config.session_idle_timeout = 30.minutes
+  config.session_absolute_timeout = 30.days
+  config.remember_me_duration = 30.days
+  config.sudo_timeout = 10.minutes
+
+  config.email_notifications_enabled = true
+  config.new_sign_in_notifications = true
+  config.password_change_notifications = true
 end
 ```
 
-4. Keep security notifications enabled unless there is a strong reason not to:
+Preserve the generated `user_class_name` setting, especially for custom user models.
+The Pwned Passwords checker sends a five-character hash prefix, never the plaintext
+password. Invalid passwords are checked locally first. The default permits valid
+passwords during provider outages; set `pwned_fail_closed = true` if rejecting such
+changes during outages is your chosen policy. Rails/bcrypt also enforces its
+72-byte password limit; a larger character setting does not remove that limit.
 
-```ruby
-config.email_notifications_enabled = true
-config.new_sign_in_notifications = true
-config.password_change_notifications = true
-```
+Remembered sessions bypass idle expiration but retain absolute expiration and
+revocation. Cookies are encrypted, HTTP-only, SameSite Lax, and Secure in the Rails
+production environment. Configure a shared production cache store, such as your
+existing Solid Cache setup, for Rails controller rate limits. Database risk
+counters do not replace that cache or correct trusted-proxy configuration.
 
-5. If two-factor is enabled, verify login and disable flows in staging:
+Generated HTML/plain-text mail previews are at `/rails/mailers/authify_mailer`
+in development. New-sign-in alerts are sent when both the IP and user-agent are
+new for that account; a recognized IP or user-agent suppresses that alert.
 
-- Sign-in should require password plus authenticator code for users with active 2FA.
-- Disabling 2FA should require current password plus authenticator code.
-
-6. Verify lockout and session controls:
-
-- Repeated failed sign-in attempts trigger account lockout.
-- Sudo challenge applies temporary lockout after repeated failures.
-- Revoking sessions from account sessions view signs devices out.
-
-7. Ensure your deployment process runs app tests and `bin/rails authify:doctor` on every release.
-
-## Installing multiple features
-
-Flags can be combined in a single command:
-
-```bash
-bin/rails generate authify:install \
-  --roles \
-  --two-factor \
-  --api \
-  --sudo \
-  --admin
-```
-
-Install every optional feature:
-
-```bash
-bin/rails generate authify:install --all
-```
-
-`--admin` requires role management, so use it with `--roles` unless roles are already installed.
-
-## Adding features later
-
-The installer is designed to be rerun. Authify reads `config/authify.yml`, skips features already installed, and generates only missing requested features.
-
-Start with the basics:
-
-```bash
-bin/rails generate authify:install
-```
-
-Add sudo mode and roles later:
-
-```bash
-bin/rails generate authify:install --sudo --roles
-bin/rails db:migrate
-```
-
-Add API tokens later:
-
-```bash
-bin/rails generate authify:install --api
-bin/rails db:migrate
-```
-
-Do not delete `config/authify.yml`; it records the installed Authify version, user model, view style, and enabled features.
-
-## Generator options
-
-```text
---user-model=User
---views=tailwind|plain|none
---oauth
---roles
---two-factor
---api
---sudo
---admin
---multi-tenant
---all
---skip-bundle
-```
-
-Custom user model example:
-
-```bash
-bin/rails generate authify:install --user-model=Account
-```
-
-When the model already exists, Authify injects its authentication concerns rather than replacing the model file. Review the generated migration: missing authentication columns are added while incompatible types require manual resolution.
-
-For a new application, the installer creates `HomeController#index`, its view, and `root "home#index"`. Existing home files and existing root routes are preserved.
-
-## Generated routes
-
-The core installer adds routes equivalent to:
-
-```ruby
-scope module: :authify do
-  get "/sign-in", to: "sessions#new", as: :new_session
-  post "/sign-in", to: "sessions#create", as: :session
-  delete "/sign-out", to: "sessions#destroy", as: :sign_out
-  get "/sign-up", to: "registrations#new", as: :new_registration
-  post "/sign-up", to: "registrations#create", as: :registration
-  get "/forgot-password", to: "passwords#new", as: :new_password
-  post "/forgot-password", to: "passwords#create", as: :passwords
-  get "/reset-password/:token", to: "passwords#edit", as: :edit_password
-  patch "/reset-password/:token", to: "passwords#update", as: :password
-end
-```
-
-Typical paths:
-
-```text
-/sign-in
-/sign-up
-/sign-out
-/forgot-password
-/reset-password/:token
-/account/password
-/verify-email
-/account/sessions
-```
-
-Optional generators append their own routes.
-
-OAuth support additionally handles:
-
-```text
-/auth/:provider/callback
-/auth/failure
-```
-
-## Protecting controllers
-
-Authify includes its authentication concern in `ApplicationController`.
-
-Require authentication:
+### Protect application controllers
 
 ```ruby
 class DashboardController < ApplicationController
@@ -344,340 +309,306 @@ class DashboardController < ApplicationController
 end
 ```
 
-Protect selected actions:
+Use `current_user` and `authenticated?` in views/controllers. Add Pundit, Action
+Policy, or your own authorization rules for resource access; authentication alone
+is not authorization.
 
-```ruby
-class ProfilesController < ApplicationController
-  require_authentication only: %i[edit update]
-end
-```
+## Set up MFA and sudo
 
-Available controller helpers include:
+### Configure encryption once
 
-```ruby
-current_user
-authenticated?
-```
-
-Unauthenticated users are redirected to the sign-in page, and safe GET destinations are remembered for the post-login redirect.
-
-## Sudo / step-up authentication
-
-Install sudo mode:
+If two-factor support is installed and the app does not already have Active Record
+encryption keys, generate them:
 
 ```bash
-bin/rails generate authify:install --sudo
-bin/rails db:migrate
+bin/rails db:encryption:init
+EDITOR="nano" bin/rails credentials:edit
 ```
 
-Protect sensitive actions:
+Copy the generated values into the credentials file:
+
+```yaml
+active_record_encryption:
+  primary_key: YOUR_GENERATED_PRIMARY_KEY
+  deterministic_key: YOUR_GENERATED_DETERMINISTIC_KEY
+  key_derivation_salt: YOUR_GENERATED_SALT
+```
+
+For separate production credentials, edit the corresponding file instead:
+
+```bash
+EDITOR="nano" bin/rails credentials:edit --environment production
+```
+
+Rails reads this encryption namespace automatically. Supply the matching credential
+key to each worker, typically through `RAILS_MASTER_KEY`. Keep existing encryption
+keys when upgrading: replacing them can make stored MFA secrets unreadable. Never
+commit plaintext credential keys. See the [Rails encryption setup guide](https://guides.rubyonrails.org/v8.0/active_record_encryption.html#setup).
+
+### Enroll and test an authenticator
+
+```bash
+bin/rails authify:doctor
+bin/rails routes -g two_factor
+```
+
+Sign in with a verified test account, open `/two_factor/new`, scan the QR code with
+an authenticator app, and submit the current password plus the generated code.
+Save the recovery codes immediately; they are displayed once. Sign out and sign
+in again: `/two-factor` is the separate login challenge for an enrolled account.
+
+TOTP and recovery codes are single-use. A code just used for sign-in may need to
+advance to the next authenticator timestep before another sensitive action.
+Disabling MFA and replacing recovery codes require password plus an enrolled
+code. Factor changes invalidate other sessions, pending sign-ins, and API tokens.
+
+### Require explicit identity confirmation
+
+With `--sudo` installed:
 
 ```ruby
-class Account::PasswordsController < ApplicationController
+class AccountDeletionController < ApplicationController
   require_authentication
-  require_sudo only: %i[edit update]
+  require_sudo only: :destroy
+
+  def destroy
+    # Apply the application's authorization and deletion policy here.
+  end
 end
 ```
 
-Require a recently completed challenge:
+Use `require_sudo freshness: 2.minutes, only: :destroy` for a tighter window.
+The confirmation page is `/sudo/new`. Users with MFA must provide an existing
+factor as well as their password. Successful explicit confirmation rotates the
+session. Recent login alone does not grant enrollment/token-management permissions.
 
-```ruby
-require_sudo freshness: 2.minutes, only: :destroy
-```
+Custom JSON clients must replace their CSRF token from the `X-CSRF-Token` response
+header after session rotation. The generated passkey browser script does this.
 
-Sudo state is stored on the current `AuthifySession` using `sudoed_at`, `sudo_expires_at`, and `sudo_method`. The default validity window is ten minutes.
+## Set up bot protection with Turnstile
 
-Good sudo-protected actions include:
+No webhook is required. You need a Turnstile **site key** for the browser and a
+**secret key** for server-side validation, not a Cloudflare account API token.
 
-- Changing email or password
-- Deleting an account
-- Disabling two-factor authentication
-- Viewing recovery codes
-- Creating API tokens
-- Changing roles or permissions
+### 1. Create a widget
 
-## Password security
+Open Cloudflare's Turnstile dashboard, add a widget, select Managed mode, and add
+the hostnames where this app runs. Keep staging and production widget settings
+separate. Copy the site key and secret key. See [Cloudflare's widget setup](https://developers.cloudflare.com/turnstile/get-started/widget-management/dashboard/).
 
-Generated user models include:
+### 2. Supply settings to Rails
 
-```ruby
-include Authify::Authenticatable
-include Authify::SecurePassword
-```
+The generated `config/initializers/authify_abuse.rb` reads:
 
-Authify uses Rails `has_secure_password` and `bcrypt`. Defaults:
+| Variable | Example | Meaning |
+| --- | --- | --- |
+| `AUTHIFY_ABUSE_MODE` | `observe` | `off`, `observe`, or `enforce` |
+| `AUTHIFY_TURNSTILE_SITE_KEY` | Your widget site key | Public browser key |
+| `AUTHIFY_TURNSTILE_SECRET_KEY` | Your widget secret key | Private backend key |
+| `AUTHIFY_TURNSTILE_HOSTNAMES` | `app.example.com,staging.example.com` | Exact allowed request hosts |
 
-```ruby
-config.password_minimum_length = 12
-config.password_maximum_length = 128
-config.pwned_password_check = true
-config.pwned_fail_closed = false
-config.pwned_timeout = 3.seconds
-```
+Use hostname values without schemes, ports, paths, or wildcards. Authify's
+allowlist is exact: list each used subdomain even if the widget allows a parent
+domain. For local manual testing, configure a separate widget allowing `localhost`
+and use `AUTHIFY_TURNSTILE_HOSTNAMES=localhost`.
 
-The breach checker hashes the password with SHA-1 locally, sends only the first five hash characters to the Pwned Passwords range API, and compares suffixes locally. The plain password is never sent.
-
-The checker fails open by default during network outages so registration is not blocked. Applications with strict availability requirements may choose fail-closed behavior.
-
-
-## Branded authentication emails
-
-The basic installer generates polished multipart email templates. Every message has responsive HTML, a plain-text fallback, application branding, support details, safe security wording, and a copyable fallback link where appropriate.
-
-Generated messages:
-
-- Email-address verification
-- Password reset
-- Welcome after successful verification
-- Password-changed security alert
-- New sign-in security alert
-
-Generated files include:
-
-```text
-app/mailers/authify_mailer.rb
-app/views/layouts/authify_mailer.html.erb
-app/views/layouts/authify_mailer.text.erb
-app/views/authify_mailer/*.html.erb
-app/views/authify_mailer/*.text.erb
-test/mailers/previews/authify_mailer_preview.rb
-```
-
-Configure branding in `config/initializers/authify.rb`:
-
-```ruby
-Authify.configure do |config|
-  config.app_name = "Acme Portal"
-  config.company_name = "Acme Incorporated"
-  config.mailer_from = "security@acme.example"
-  config.support_email = "support@acme.example"
-  config.logo_url = "https://acme.example/logo-email.png"
-  config.primary_color = "#2563eb"
-  config.email_footer_text = "You received this security message because you have an Acme account."
-end
-```
-
-`logo_url` must be an absolute URL that an email client can load. Keep the image small and host it over HTTPS. Email styling uses inline CSS for broad mail-client compatibility and does not depend on the application's Tailwind build.
-
-Security notification controls:
-
-```ruby
-config.email_notifications_enabled = true
-config.new_sign_in_notifications = true
-config.password_change_notifications = true
-```
-
-New sign-in alerts are enabled by default. An alert is sent only when both the IP address and device user-agent have not appeared in any prior successful sign-in for the user. A known IP or a known device suppresses the alert.
-
-### Previewing emails
-
-In development, open Rails' standard mailer-preview interface:
-
-```text
-/rails/mailers/authify_mailer
-```
-
-The preview uses the first user record when available and otherwise builds a non-persisted sample user. Configure `default_url_options` before testing links:
-
-```ruby
-# config/environments/development.rb
-config.action_mailer.default_url_options = { host: "localhost", port: 3000 }
-```
-
-Production example:
-
-```ruby
-config.action_mailer.default_url_options = { host: "app.example.com", protocol: "https" }
-```
-
-Authify queues messages with `deliver_later`; make sure Active Job is connected to a working queue adapter in production.
-
-## Sessions
-
-The browser receives an encrypted, HTTP-only cookie containing a random opaque token. The database stores only its SHA-256 digest.
-
-Default session settings:
-
-```ruby
-config.session_idle_timeout = 30.minutes
-config.session_absolute_timeout = 30.days
-config.remember_me_duration = 30.days
-```
-
-Normal browser sessions expire after the configured idle timeout. Remembered sessions use a persistent cookie and bypass the idle timeout, but still expire after `remember_me_duration`. Revocation, password changes, email changes, disabled accounts, and verification enforcement continue to invalidate remembered sessions.
-
-The generated cookie uses:
-
-```ruby
-httponly: true
-secure: Rails.env.production?
-same_site: :lax
-```
-
-Password resets revoke all existing Authify sessions.
-
-## Configuration
-
-The installer creates `config/initializers/authify.rb`:
-
-```ruby
-Authify.configure do |config|
-  config.user_class_name = "User"
-  config.password_minimum_length = 12
-  config.password_maximum_length = 128
-  config.pwned_password_check = true
-  config.pwned_fail_closed = false
-  config.email_verification_required = true
-  config.session_idle_timeout = 30.minutes
-  config.session_absolute_timeout = 30.days
-  config.remember_me_duration = 30.days
-  config.sudo_timeout = 10.minutes
-  config.after_sign_in_path = "/"
-  config.after_sign_out_path = "/"
-end
-```
-
-## Mailer setup
-
-Configure a host so verification and reset links are generated correctly:
-
-```ruby
-# config/environments/production.rb
-config.action_mailer.default_url_options = {
-  host: "example.com",
-  protocol: "https"
-}
-```
-
-Configure a delivery provider separately. Authify generates editable HTML templates in `app/views/authify_mailer`.
-
-In development, do not copy verification or reset links from Rails' raw mail log. Email bodies are quoted-printable encoded, and long URLs may be wrapped with `=` as a soft line-break marker; copying one physical log line truncates the token. Open the message through a real mail client or a development inbox such as Letter Opener, Mailpit, or Mailcatcher. If a link was copied from the log, request a fresh message and use the complete decoded URL.
-
-## Two-factor authentication
-
-Install TOTP support:
+For a local shell, export your values and then launch Rails from that same shell.
+Use your secret loader for the private key rather than committing it to files:
 
 ```bash
-bin/rails generate authify:install --two-factor
+export AUTHIFY_ABUSE_MODE=observe
+export AUTHIFY_TURNSTILE_SITE_KEY='YOUR_PUBLIC_SITE_KEY'
+export AUTHIFY_TURNSTILE_HOSTNAMES='localhost'
+# Supply AUTHIFY_TURNSTILE_SECRET_KEY through your local secret loader.
+bin/dev
+```
+
+Restart the app after changing these values. Cloudflare's public dummy keys are
+for component tests, not production protection. For end-to-end Authify testing,
+use a real staging widget: the verifier also checks the returned hostname/action.
+See [Cloudflare's testing guide](https://developers.cloudflare.com/turnstile/troubleshooting/testing/).
+
+### Optional: read Turnstile secrets from Rails credentials
+
+If you prefer credentials to environment variables, add this to the credentials
+file used by that environment:
+
+```yaml
+turnstile:
+  site_key: YOUR_PUBLIC_SITE_KEY
+  secret_key: YOUR_PRIVATE_SECRET_KEY
+  hostnames:
+    - app.example.com
+```
+
+Replace the provider setup in `config/initializers/authify_abuse.rb` with:
+
+```ruby
+Authify.configure do |config|
+  config.abuse_mode = ENV.fetch("AUTHIFY_ABUSE_MODE", "observe").to_sym
+  config.turnstile_site_key = Rails.application.credentials.dig(:turnstile, :site_key)
+  config.bot_challenge_partial = "authify/turnstile"
+  config.bot_challenge_verifier = Authify::TurnstileVerifier.new(
+    secret: Rails.application.credentials.dig(:turnstile, :secret_key),
+    hostnames: Rails.application.credentials.dig(:turnstile, :hostnames)
+  )
+end
+```
+
+Supply all three credential values; the verifier requires a nonempty secret and
+allowed hostnames. Preserve the generated parameter-filter configuration below that block. Choose
+one provider configuration source so that later initializers do not override it.
+
+### 3. Check assets, network access, and observation mode
+
+The generator supplies the challenge partial and browser asset. If your app uses
+a CSP, append `https://challenges.cloudflare.com` to its script/frame allowlists,
+preserving existing origins and nonce settings. Permit the Rails backend to call
+Cloudflare's HTTPS Siteverify endpoint. Custom forms must render the configured
+partial inside the submitted form and submit `authify_challenge_token`.
+
+In observation mode the app records projected decisions while retaining existing
+fixed controls. The widget normally stays hidden because challenges are not
+being enforced. This is expected; ordinary users are not challenged on every login.
+
+### 4. Test enforcement in staging, then enable it deliberately
+
+Set the following in the environment of **all web workers**, restart them, and run
+doctor using the same settings:
+
+```text
+AUTHIFY_ABUSE_MODE=enforce
+```
+
+```bash
+bin/rails authify:doctor
+```
+
+On a dedicated staging account without MFA, make five incorrect password attempts,
+then try again to exercise the default challenge threshold. Complete the widget
+and use the correct password. Also test expired/duplicate tokens, missing tokens,
+provider outages, enrolled MFA, passkeys, and normal users behind a shared network.
+Existing account locks from observation mode still apply until they expire.
+Doctor checks configuration; it does not perform a real browser/provider test.
+
+With enforcement active, verified challenge success never replaces a correct
+password or enrolled MFA. Repeated source/account failures can cause a bounded
+cooldown with `Retry-After`. Trusted-browser evidence reduces some soft challenges;
+the cookie alone never signs a user in. Attack traffic does not extend automatic
+password-failure account locks in enforcement mode. Pre-existing locks remain valid.
+
+Switch back to `AUTHIFY_ABUSE_MODE=observe` and restart if you need to stop adaptive
+enforcement while investigating false positives. Intrinsic MFA/confirmation limits
+continue to apply. Turnstile is not a replacement for edge-level DDoS protection.
+
+### Thresholds and custom providers
+
+Adjust thresholds in the existing abuse initializer after reviewing traffic:
+
+```ruby
+Authify.configure do |config|
+  config.abuse_window = 10.minutes
+  config.abuse_source_request_limit = 300
+  config.abuse_source_failure_threshold = 30
+  config.abuse_pair_challenge_threshold = 5
+  config.abuse_pair_cooldown_threshold = 10
+  config.abuse_account_failure_threshold = 10
+  config.abuse_spray_threshold = 10
+  config.abuse_public_source_challenge_threshold = 5
+  config.abuse_account_request_limit = 5
+  config.abuse_device_lifetime = 30.days
+end
+```
+
+`off` disables adaptive tracking while retaining other authentication controls.
+MFA allows five attempts per challenge and ten per account per fixed five-minute
+window across IPs/new challenges; issuance allows twenty challenges per account in
+that window. Explicit sensitive confirmations allow ten attempts per account per
+five minutes. These intrinsic budgets apply in every adaptive mode, fail closed
+when storage is unavailable, and do not extend their window on rejection.
+
+All workers need the same counter database and Rails key material. Configure
+trusted proxies before relying on `request.remote_ip`. Counters use keyed hashes
+of identifiers, including tenant context for accounts, rather than raw email/IP.
+
+A custom provider must configure `bot_challenge_partial` and a callable
+`bot_challenge_verifier` accepting `token:`, `request:`, and `action:`. Return exactly
+`true` only after backend validation of single use, expected action, and origin.
+Never accept a browser-supplied success flag. The built-in adapter verifies
+success, hostname, and action using [Cloudflare server validation](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/).
+
+## Set up passkeys
+
+```bash
+bin/rails generate authify:install --passkeys
 bin/rails db:migrate
 ```
 
-This adds `rotp` and `rqrcode`, an encrypted TOTP secret, enrollment controller, QR code page, and enable/disable routes.
+Set these variables in the deployed environment and restart:
 
-Recovery codes are generated when 2FA is enabled, displayed once, stored only as digests, and consumed atomically. Regenerating codes requires the current password and a valid authenticator code and invalidates every previous recovery code.
+```text
+AUTHIFY_WEBAUTHN_ORIGINS=https://app.example.com
+AUTHIFY_WEBAUTHN_RP_ID=app.example.com
+```
 
-## API tokens
+Origins include scheme and non-default port, if any; multiple origins are comma
+separated. RP ID is a domain without scheme, port, or path. Keep it stable after
+enrollment and choose values matching your deployment. Do not use wildcard origins.
+Local defaults are `http://localhost:3000` and RP ID `localhost`. Production has no
+permissive defaults. Use HTTPS on deployed hosts and a browser supporting
+`parseCreationOptionsFromJSON`, `parseRequestOptionsFromJSON`, and credential `toJSON()`.
 
-Install personal token support:
+Open `/passkeys` after sign-in. Confirm with the current password plus an enrolled
+MFA code, or use the existing-passkey confirmation button; then add/remove a key.
+Test a second device, sign-out/sign-in, cancellation, and recovery. WebAuthn requires
+local user verification (device PIN, fingerprint, or face); a verified passkey login
+does not also request a TOTP. Server challenges expire after five minutes and are
+single-use even for authenticators whose signature counter stays zero.
+
+## Set up API tokens
 
 ```bash
 bin/rails generate authify:install --api
 bin/rails db:migrate
 ```
 
-HTTP token creation requires `current_password` plus `code` when MFA is enabled, or a recent explicit identity confirmation. Password resets, password/email changes and factor changes invalidate previously issued tokens. Raw tokens are returned only when created. The database stores the token digest. Add application-specific scopes and authorization rules before exposing protected API endpoints.
-
-## Roles and administration
-
-Install role support:
-
-```bash
-bin/rails generate authify:install --roles
-bin/rails db:migrate
-```
-
-Check a role:
+Declare permissions in `config/initializers/authify.rb`, then restart:
 
 ```ruby
-current_user.has_role?(:admin)
+Authify.configure do |config|
+  config.api_scopes = %w[books:read books:write]
+end
 ```
 
-The optional admin event page requires `has_role?(:admin)`. Authify roles are intentionally small; use Pundit, Action Policy, or application policies for full authorization.
+The browser-authenticated management endpoints are:
 
-## Multi-tenancy
+| Request | Behavior |
+| --- | --- |
+| `GET /api/authify_tokens` | List your token metadata |
+| `POST /api/authify_tokens` | Create with `name`, `scopes` array, `current_password`, and `code` if MFA is enabled, or recent explicit confirmation |
+| `DELETE /api/authify_tokens/:id` | Revoke your token |
 
-In 0.3.0 the `--multi-tenant` option generated a starting concern; see the 0.4.0 tenant section below for the current workflow. Authify cannot infer whether the tenant is a school, organization, account, subdomain, or request context, so you must add the correct association, foreign key, composite unique index, and tenant-resolution logic.
+These endpoints require a browser session and CSRF protection, not a Bearer token.
+Build an app-owned management UI if needed; the generator provides the controller,
+not a complete token-settings page. Creation returns the raw token once. Custom
+JSON clients must use the refreshed `X-CSRF-Token` header after confirmation.
 
-Never rely only on a model validation for tenant isolation. Enforce database indexes and scope every authentication lookup to the current tenant.
-
-## Diagnostics
-
-Run:
-
-```bash
-bin/rails authify:doctor
-```
-
-The doctor checks models, password hashing, routes, mailer setup, secret key base, manifest presence, and production HTTPS/mailer host configuration.
-
-Show version and installed features:
-
-```bash
-bin/rails authify:version
-```
-
-## Upgrading
-
-After updating the gem:
-
-```bash
-bundle update authify_rails
-bin/rails generate authify:upgrade
-bin/rails authify:doctor
-bin/rails test
-```
-
-The upgrade generator previews template changes, preserves non-overlapping customizations, and blocks application updates when conflicts require review. Review [UPGRADING.md](UPGRADING.md) for release-specific instructions.
-
-## Security notes
-
-Before production deployment:
-
-- Use a maintained Ruby release (Ruby 3.4 or newer is recommended); Ruby 3.2 compatibility tests do not make that end-of-life runtime suitable for production
-- Use HTTPS and enable `config.force_ssl`
-- Configure mail delivery and URL options
-- Review every generated migration
-- Apply database uniqueness indexes
-- Keep OAuth authorization on POST requests; review verified-email claims and existing provider identity links
-- Add rate limiting at the application or edge layer
-- Add authorization policies beyond authentication
-- Protect sensitive actions with sudo mode
-- Test account enumeration and redirect behavior
-- Run your application's security scanners
-- Keep Rails and Authify updated
-- Use a shared production Rails cache store so controller rate limits are enforced consistently across processes
-
-Email changes require explicit recent identity confirmation, or the current password plus an enrolled authenticator/recovery code. The current address remains active until the new address is confirmed. Authify rate-limits requests and confirmations, notifies the old address when a change is requested, notifies both addresses after confirmation, supports cancellation, and revokes all sessions after the address changes.
-
-Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
-
-## Development
-
-```bash
-bundle install
-bundle exec rake test
-```
-
-Build the gem:
-
-```bash
-gem build authify_rails.gemspec
-```
-
-## License
-
-Authify Rails is available under the MIT License.
-
-
-## API authentication in 0.4.0
-
-Declare allowed scopes in your Authify initializer before issuing tokens:
+For trusted console/operator code, tokens can also be issued explicitly:
 
 ```ruby
-config.api_scopes = %w[books:read books:write]
+# bin/rails console; use the configured model instead of User if customized.
+user = User.find_by!(email: "test@example.com")
+record, raw_token = AuthifyApiToken.issue!(
+  user: user, name: "Staging reader", scopes: ["books:read"],
+  expires_at: 30.days.from_now
+)
 ```
 
-A resource controller can authenticate without browser cookies:
+Store the raw value securely; it cannot be recovered from its digest later. When
+tenants are enabled, establish the trusted `Current.authify_tenant_id` first and
+use `Authify.user_scope` for lookup; cross-tenant issuance is rejected.
+
+Protect resources separately; this example assumes your app has a `books` association:
 
 ```ruby
 class Api::BooksController < ActionController::API
@@ -690,229 +621,236 @@ class Api::BooksController < ActionController::API
 end
 ```
 
-Send `Authorization: Bearer authify_live_...`. Missing, expired, revoked,
-unverified-account, disabled-account, wrong-tenant and no-longer-approved-scope
-tokens are rejected. Missing resource scopes return 403. All listed scopes are
-required. Tokens are returned in full only on creation; stored values are digests.
-The generated token-management controller still uses browser authentication and
-CSRF protection. Use `AuthifyApiToken.issue!(..., expires_at: 30.days.from_now)`
-when issuing expiring tokens programmatically. Existing scopes must be explicitly
-included in the configuration; an empty allowlist only permits unscoped tokens.
+Send `Authorization: Bearer authify_live_...`. Missing/expired/revoked tokens,
+unverified or disabled accounts, wrong tenants, and no-longer-approved scopes are
+rejected. Missing required scopes return 403; all declared scopes are required.
+An empty scope allowlist permits only unscoped tokens. Add application authorization
+for writes and individual resources. Credential/factor/tenant changes invalidate
+previously issued tokens.
 
-## Passkeys in 0.4.0
+## Set up OAuth
 
 ```bash
-bin/rails generate authify:install --passkeys
+bin/rails generate authify:install --oauth
 bin/rails db:migrate
 ```
 
-Configure explicit trusted origins and the RP ID:
+The initializer reads `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `FACEBOOK_APP_ID`,
+and `FACEBOOK_APP_SECRET`. Create provider applications, configure the appropriate
+credentials, and register matching callback URLs:
 
 ```text
-AUTHIFY_WEBAUTHN_ORIGINS=https://app.example.com
-AUTHIFY_WEBAUTHN_RP_ID=app.example.com
+https://app.example.com/auth/google_oauth2/callback
+https://app.example.com/auth/facebook/callback
 ```
 
-Local development defaults to `http://localhost:3000` and RP ID `localhost`.
-Production has no permissive defaults. Use a current browser supporting
-`PublicKeyCredential.parseCreationOptionsFromJSON`,
-`parseRequestOptionsFromJSON` and credential `toJSON()`; HTTPS is required except
-for localhost. The generator adds a passkey sign-in button and `/passkeys` settings.
-Enrollment/deletion requires an explicit recent identity confirmation: current
-password plus an enrolled authenticator/recovery code, or a fresh assertion from
-an existing passkey. A newly created login session alone does not grant this
-permission. The settings page supports both confirmation methods. Confirmation
-rotates the session; JSON clients must replace their CSRF token with the
-`X-CSRF-Token` response header, as the generated browser script does.
-WebAuthn verifies origin, RP ID, signature, user verification and counters;
-database-backed challenges expire after five minutes and are consumed once even
-for authenticators whose counter is zero. These are passwordless passkeys with
-required local user verification; they do not prompt for a second TOTP code.
-Schedule `bin/rails authify:prune_challenges` periodically to remove expired rows.
-Keep a separate recovery method and test with real target devices before rollout.
-No existing login method is removed when passkeys are installed.
+Provider authorization starts with POST and Rails CSRF protection. Existing
+identities are matched by provider and UID. **An existing local account is never
+automatically linked by email.** New identities require a boolean
+`extra.raw_info.email_verified: true`; generic `verified` flags and string values
+are not sufficient.
 
-## Tenant authentication in 0.4.0
+The Facebook strategy is installed, but typical Facebook responses do not provide
+that explicit verified-email claim. New Facebook registrations need an
+application-specific reviewed verification/linking flow; they are not enabled
+safely by setting credentials alone. Already-linked identities can still sign in.
+The same review applies when adding another strategy. Do not loosen the verified
+claim check to bypass rejected registrations. Review identity links created by
+older automatic email-linking code during rollout.
+
+## Set up roles and tenants
+
+### Roles and admin events
+
+```bash
+bin/rails generate authify:install --roles --admin
+bin/rails db:migrate
+```
+
+Assign roles only through trusted operator/application logic. For example, in the
+Rails console with the correct user model and tenant context:
+
+```ruby
+user = Authify.user_scope.find_by!(email: "owner@example.com")
+role = AuthifyRole.find_or_create_by!(name: "admin")
+user.authify_roles << role unless user.has_role?(:admin)
+```
+
+`user.has_role?(:admin)` checks membership. The event page is
+`/authify/admin/authentication_events` and requires the admin role. Roles do not
+replace resource-level authorization policies or controlled admin provisioning.
+
+### Tenant isolation: prepare first, activate last
 
 ```bash
 bin/rails generate authify:install --multi-tenant
 bin/rails db:migrate
 ```
 
-The generated `config/initializers/authify_tenant.rb` leaves tenant mode disabled.
-Configure `tenant_resolver` from trusted organization/subdomain middleware, backfill
-every user's `tenant_id`, and configure app-owned tenant associations/foreign keys.
-Do not trust a submitted tenant parameter. The default resolver reads
-`request.env["authify.tenant_id"]`; your middleware must populate it.
-
-After backfilling, explicitly generate and review the constraint conversion:
+The generated `config/initializers/authify_tenant.rb` reads a trusted
+`request.env["authify.tenant_id"]`. Supply that from your own validated organization/
+subdomain middleware. Never copy an arbitrary submitted tenant ID into that value.
+Configure app-owned tenant associations and foreign keys, backfill every user's
+tenant, then generate and review the index conversion:
 
 ```bash
 bin/rails generate authify:tenant_indexes
-# Review: this replaces global email indexes with tenant-scoped unique indexes.
+# Review the migration before running it.
 bin/rails db:migrate
 ```
 
-Set `AUTHIFY_TENANT_ENABLED=true` only after configuring and testing the resolver.
-Missing tenant context fails closed. Registration, password sign-in/reset, email
-verification/change, sessions, API tokens, passkeys and user-linked admin events
-are scoped to the resolved tenant. Unknown-account events without a user are not
-shown in tenant-scoped admin listings. OAuth identities are currently globally
-unique by provider/UID and cannot be linked into another tenant; shared-identity
-membership across tenants needs an application-specific account model.
+Only then set `AUTHIFY_TENANT_ENABLED=true`, restart, run doctor, and test cross-tenant
+isolation. Missing context fails closed. Global email uniqueness stays in place
+until the explicit index conversion; custom global indexes may need manual review.
+Rollback to global uniqueness may be impossible once tenants share email addresses.
 
-Global uniqueness constraints are preserved until you explicitly run the reviewed
-conversion migration. Custom global unique indexes may also need manual conversion.
-Rollback to global indexes can fail once tenants share an email address, so there
-is no automatic destructive rollback. A later security upgrade preserves named
-tenant email indexes instead of reintroducing global constraints.
+Tenant-key changes through `update!` invalidate credentials, even while tenant mode
+is disabled. Moving an account requires fresh sign-in and replacement API tokens.
+Custom raw-SQL/bulk moves must explicitly invalidate credentials under the user lock.
+OAuth provider/UID identities are globally unique; shared membership across tenants
+requires an application-specific identity model.
 
-## Adaptive login and bot protection
+## Configure Kamal deployments
 
-Adaptive protection uses shared database counters for password sign-in, registration,
-password-reset requests and verification-email resends. It detects repeated
-source/account failures, distributed failures against an account, and password
-spraying across accounts. It does not identify humans with certainty or replace
-edge-level DDoS protection.
+Merge these entries into your existing `config/deploy.yml`; keep the app's current
+database/cache/job settings and secrets. Use your own hostnames and public site key:
 
-The default is **observation mode**. Existing rate limits and account lockouts remain
-in effect while `authify.abuse_decision` notifications report the projected decision.
-No third-party challenge script is loaded unless a challenge is needed and a provider
-has been configured.
+```yaml
+env:
+  clear:
+    AUTHIFY_ABUSE_MODE: observe
+    AUTHIFY_TURNSTILE_SITE_KEY: YOUR_PUBLIC_SITE_KEY
+    AUTHIFY_TURNSTILE_HOSTNAMES: app.example.com
+    AUTHIFY_WEBAUTHN_ORIGINS: https://app.example.com
+    AUTHIFY_WEBAUTHN_RP_ID: app.example.com
+  secret:
+    - RAILS_MASTER_KEY
+    - AUTHIFY_TURNSTILE_SECRET_KEY
+```
 
-To upgrade existing generated files and add the counter table:
+Provide secret values through Kamal's secret files or supported secret-manager
+integration. With destinations, use the corresponding `.kamal/secrets.<destination>`
+or shared secrets configuration. Do not commit plaintext secret values. See
+[Kamal environment and secret configuration](https://kamal-deploy.org/docs/configuration/environment-variables/).
+
+If Turnstile is wired directly to Rails credentials instead, omit its secret ENV
+entry and ensure the matching Rails credential key reaches every worker. A shell
+export on your laptop does not change settings inside an existing container.
+Run doctor inside the deployed container with its production environment and
+secret configuration. Redeploy/restart all relevant workers after configuration changes. Keep observation
+mode until staging browser/provider tests succeed, then explicitly select enforcement.
+
+## Test, monitor, and clean up
+
+### Verification commands
+
+After configuring installed features:
 
 ```bash
-bin/rails generate authify:upgrade --dry-run
-bin/rails generate authify:upgrade
-# Review the diff and additive migration first.
-bin/rails db:migrate
+bin/rails authify:version
 bin/rails authify:doctor
+bin/rails zeitwerk:check
+RAILS_ENV=test bin/rails db:prepare
 bin/rails test
 ```
 
-### Configure a verified bot challenge
+Generated focused tests can be run explicitly when those features are installed:
 
-The generated `config/initializers/authify_abuse.rb` supports Cloudflare Turnstile:
-
-```text
-AUTHIFY_ABUSE_MODE=observe
-AUTHIFY_TURNSTILE_SITE_KEY=your_public_widget_site_key
-AUTHIFY_TURNSTILE_SECRET_KEY=your_server_secret
-AUTHIFY_TURNSTILE_HOSTNAMES=app.example.com
+```bash
+bin/rails test \
+  test/integration/authify_security_flows_test.rb \
+  test/integration/authify_hardening_test.rb \
+  test/integration/authify_concurrency_test.rb \
+  test/integration/authify_abuse_test.rb
 ```
 
-Register the same hostnames in your Turnstile widget. Allow
-`https://challenges.cloudflare.com` in the application's CSP script/frame rules,
-and allow the Rails backend to reach Cloudflare's Siteverify endpoint. Keep the
-secret server-side. The adapter checks success, exact request hostname against a
-configured allowlist, and the expected action. Cloudflare validates expiration and
-single use; failed, duplicate, invalid, mismatched and unavailable responses do not
-approve a login. See [Cloudflare's validation documentation](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/).
+OAuth adds `test/integration/authify_oauth_security_test.rb`. PostgreSQL runs the
+row-lock concurrency tests; SQLite skips them. Existing app fixtures/routes can
+need integration work; passing gem CI does not replace testing your actual app.
+Validate real mail delivery, account recovery, MFA, passkey devices, provider outages,
+CSRF, shared-network traffic, and tenant isolation before production rollout.
 
-For a custom provider, configure `bot_challenge_partial` and a
-`bot_challenge_verifier` callable accepting `token:`, `request:` and `action:`.
-The partial must submit `authify_challenge_token` inside the existing form. The
-verifier must perform server-side, single-use validation and return exactly `true`
-only after validating the expected action and deployment origin. Browser-supplied
-success flags are never accepted.
+### Observe decisions
 
-### Enable enforcement after observing real traffic
-
-Set `AUTHIFY_ABUSE_MODE=enforce` after testing the challenge and recovery paths in
-staging. `authify:doctor` checks that the shared counter table and challenge setup
-exist. A correctly configured provider and real-device/browser tests are still
-required; configuration checks cannot certify a provider's availability.
-
-In enforcement mode:
-
-- Occasional password mistakes remain ordinary login failures.
-- Repeated failures introduce challenge/MFA requirements, then a bounded
-  source/account cooldown with `Retry-After`; requests blocked by that cooldown do
-  not keep extending its last-failure time.
-- Automatic new password-failure account-wide locks are replaced with these
-  controls. Pre-existing `locked_until` values are still honored until expiration.
-- Correct passwords still require any enrolled MFA. Under elevated risk, a correct
-  password without MFA needs a verified bot challenge. Passkey sign-in remains a
-  separate cryptographically verified path.
-- A previously verified browser can reduce soft challenges caused by distributed
-  or shared-IP attacks. Its opaque encrypted cookie is never sufficient to sign
-  in and cannot bypass repeated failures against its own source/account pair.
-- MFA allows five submissions per primary-authentication challenge and ten per
-  account in a fixed five-minute window across IPs and newly minted challenges.
-  At most twenty challenges can be issued per account in that window. Explicit
-  sensitive-action confirmations allow ten submissions per account per five-minute
-  window. These intrinsic verification limits apply in every adaptive mode and
-  fail closed if shared storage is unavailable. Rejected requests do not extend
-  the fixed window. Accounts under an active attack may need to wait until the
-  next window or use an available passkey/recovery path.
-- Successful password changes, resets and email changes invalidate the affected
-  account's trusted-browser evidence. Failed attacks do not revoke existing sessions.
-- The source request hard budget protects application resources and can still
-  restrict shared networks under extreme load. Tune it from observed traffic.
-
-Modes are `off`, `observe` and `enforce`. `off` disables adaptive tracking while
-retaining legacy authentication controls. Invalid mode names and invalid numeric
-settings are rejected. Thresholds are configurable through `Authify.configure`:
+Subscribe to `authify.abuse_decision`, `authify.bot_challenge`, and
+`authify.abuse_store_error`. A simple development/staging subscriber is:
 
 ```ruby
-config.abuse_window = 10.minutes
-config.abuse_source_request_limit = 300
-config.abuse_source_failure_threshold = 30
-config.abuse_pair_challenge_threshold = 5
-config.abuse_pair_cooldown_threshold = 10
-config.abuse_account_failure_threshold = 10
-config.abuse_spray_threshold = 10
-config.abuse_public_source_challenge_threshold = 5
-config.abuse_account_request_limit = 5
-config.abuse_device_lifetime = 30.days
+# config/initializers/authify_monitoring.rb
+ActiveSupport::Notifications.subscribe("authify.abuse_decision") do |_name, _start, _finish, _id, payload|
+  Rails.logger.info("authify action=#{payload[:action]} decision=#{payload[:decision]} reasons=#{Array(payload[:reasons]).join(',')}")
+end
 ```
 
-Configure Rails' trusted proxy list correctly before relying on `request.remote_ip`;
-never treat arbitrary public forwarding headers as authoritative. All workers must
-share the counter database and the same Rails key material. Missing counter storage
-fails closed for enforced password/public attempts; observation retains existing
-controls and emits `authify.abuse_store_error` notifications.
+Monitor challenge rates, successful recovery, false positives, and counter-store
+errors. Keep credentials and challenge tokens out of logs. Configure your own
+retention policy for authentication events and old session/token records.
 
-### Monitoring and retention
+### Schedule cleanup
 
-Subscribe to `authify.abuse_decision`, `authify.bot_challenge` and
-`authify.abuse_store_error` through `ActiveSupport::Notifications`. Monitor challenge
-rates, successful recovery and false positives before changing thresholds. The
-counter table stores keyed hashes of account/source/browser identifiers, not raw
-emails, IPs, passwords or challenge tokens. Account identifiers include tenant
-context. Minute buckets expire shortly after the configured window; trusted-browser
-records expire after the configured lifetime.
+Run these tasks periodically through your scheduler, for example hourly:
 
-Schedule `bin/rails authify:prune_abuse` periodically (for example hourly through
-Solid Queue recurring tasks). There is no Redis requirement. The generated abuse
-initializer adds sensitive challenge/credential fields to Rails parameter filtering.
-Existing application authentication-event retention remains application-owned.
+```bash
+bin/rails authify:prune_abuse
+bin/rails authify:prune_challenges
+```
 
+For an app already using Solid Queue, equivalent recurring cleanup can be merged
+into `config/recurring.yml`:
 
-### Credential changes and OAuth identities
+```yaml
+production:
+  authify_prune_abuse:
+    command: "AuthifyAbuseBucket.where('expires_at < ?', Time.current).delete_all"
+    schedule: every hour
+  authify_prune_sign_in_challenges:
+    command: "AuthifySignInChallenge.where('expires_at < ?', Time.current).delete_all"
+    schedule: every hour
+  # Include this entry only when passkeys are installed.
+  authify_prune_passkey_challenges:
+    command: "AuthifyPasskeyChallenge.where('expires_at < ?', Time.current).delete_all"
+    schedule: every hour
+```
 
-Password, email, verification and disabled-state changes advance a database-backed
-security version. MFA/passkey changes do the same. Earlier browser sessions,
-API tokens and unfinished MFA/passkey sign-ins cannot regain validity. Factor
-management rotates the verified current session and invalidates other sessions
-and API tokens; recreate affected API integrations after such changes. Use model
-`update!`/the generated management flows for security changes: raw SQL,
-`update_columns` and bulk updates bypass Rails security callbacks. Custom factor
+Ensure the scheduler runs and a worker consumes `solid_queue_recurring`. Counter
+windows and trusted-browser evidence expire, but rows remain until cleanup. No
+Redis dependency is required for these database counters.
+
+### Application-owned security changes
+
+Use `update!` and generated management flows for security changes. Raw SQL,
+`update_columns`, and bulk operations bypass Rails callbacks. Custom factor
 management must call `user.authify_invalidate_credentials!` under the user lock.
+Use `AuthifySession#revoke!` for explicit revocation so it coordinates with enrollment
+and session rotation. Upgrade proposals and additive migrations must still be
+reviewed; doctor marks configuration validation, not production security approval.
 
-New OAuth identities require an explicit boolean `email_verified: true` from the
-trusted provider. A generic account `verified` flag or string value is insufficient.
-An existing account is never linked automatically by matching email, including an
-unverified local account. Already-linked identities can still sign in. Authenticated
-provider linking is not implemented; do not bypass these checks to add it. Providers
-that do not supply an explicit verified-email claim, including typical Facebook
-responses, need a separately reviewed email-verification/linking flow before new
-registrations can be accepted. Review identities created by earlier automatic
-email-linking code during rollout.
+## Troubleshooting
 
-Password-reset and verification resends have an atomic sixty-second cooldown;
-repeat requests retain the first usable link. Recovery codes appear once in the
-successful response, with `Cache-Control: no-store`, and are never put in cookies.
-The session settings page shows the most recent 100 records. Expired records still
-need an application retention policy and scheduled cleanup.
+| Symptom | Check |
+| --- | --- |
+| `authify:upgrade` generator not found | Confirm the app's Gemfile uses the intended source, run Bundler, and restart any preloader. |
+| Installer says to upgrade first | Run the upgrade preview/application workflow, not another fresh core install. |
+| Upgrade conflicts | Review `.authify/upgrade/**/*.proposed`, resolve without merge markers, and rerun. |
+| Doctor reports missing security columns/tables | Review and run all generated migrations, including `HardenAuthifyCredentials`. |
+| MFA encryption key/decryption error | Use the matching environment credentials and original encryption keys; do not generate replacements over existing data. |
+| No verification/reset email | Check provider settings, sender verification, URL host, queued jobs, worker queues, and delivery errors. |
+| No Turnstile widget on normal login | Expected in observation mode and low-risk logins; use the controlled staging challenge test. |
+| Challenge always rejected | Check site/secret pairing, exact hostname allowlist, action, CSP, backend network access, token reuse, and server ENV after restart. |
+| Settings added to credentials have no effect | ENV-based initializers need explicit credentials wiring; see the Turnstile example. |
+| Passkey settings return 403 | Confirm identity explicitly; recent sign-in alone is insufficient. |
+| Passkey ceremony rejected | Check HTTPS, trusted origin/port, RP ID, supported browser, user verification, and the refreshed CSRF token. |
+| Authenticator code rejected after recent use | Wait for the next timestep or use an unused recovery code; codes cannot be replayed. |
+| API token stopped working after account changes | Expected credential invalidation; issue a replacement with approved scopes. |
+| OAuth rejects an existing matching email or Facebook signup | Review the explicit email-verification and authenticated-linking policy above. |
+| Tenant requests return 403 | Check trusted resolver, user backfill, reviewed indexes, activation, and current tenant context. |
+
+## Development and license
+
+For development against a local gem checkout, replace the app's gem entry with
+`gem "authify_rails", path: "../authify_rails"`; do not keep a duplicate Git/RubyGems
+entry. Gem contributors can run `bundle exec rake test` and build with
+`gem build authify_rails.gemspec`.
+
+See [CHANGELOG.md](CHANGELOG.md), [UPGRADING.md](UPGRADING.md), and
+[SECURITY.md](SECURITY.md). Authify Rails is available under the MIT License.
