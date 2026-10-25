@@ -33,7 +33,7 @@ module Authify
       duration = remember ? Authify.configuration.remember_me_duration : Authify.configuration.session_absolute_timeout
       record = user.with_lock do
         eligible = user.disabled_at.blank? && !user.locked? && (!Authify.configuration.email_verification_required || user.email_verified?)
-        raise Authify::StaleAuthentication unless eligible && user.authify_security_version == expected_version
+        raise Authify::StaleAuthentication unless eligible && user.authify_security_version == expected_version && Authify.user_in_current_tenant?(user)
         user.authify_sessions.create!(
           authify_security_version: expected_version,
           token_digest: digest,

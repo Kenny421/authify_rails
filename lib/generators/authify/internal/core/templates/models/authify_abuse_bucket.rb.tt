@@ -8,19 +8,20 @@ class AuthifyAbuseBucket < ApplicationRecord
       on_duplicate: Arel.sql('"count" = "authify_abuse_buckets"."count" + 1, "updated_at" = EXCLUDED."updated_at"'), returning: false)
   end
 
-  # Fixed windows are not extended by rejected requests. The row lock makes the
+  # Fixed windows are not extended by rejected requests. The conditional upsert makes the
   # allowance atomic across processes, including distributed second-factor guesses.
   def self.consume_budget!(kind:, key:, now:, limit:, window:)
-    start = Time.at(now.to_i / window.to_i * window.to_i).utc
+    seconds = window.to_i
+    raise ArgumentError, "Invalid verification budget" unless limit.is_a?(Integer) && limit.positive? && seconds.positive?
+    start = Time.at(now.to_i / seconds * seconds).utc
     identity = { kind: kind, action: kind, source_digest: key, account_digest: key, window_started_at: start }
-    transaction do
-      row = create_or_find_by!(identity) { |r| r.count = 0; r.expires_at = start + window }
-      row.with_lock do
-        return false if row.count >= limit
-        row.update!(count: row.count + 1)
-        true
-      end
-    end
+    # The conditional upsert returns a row only when the increment is allowed.
+    # Rejected attempts change neither the counter nor the fixed expiry time.
+    result = upsert_all([identity.merge(count: 1, expires_at: start + seconds, created_at: now, updated_at: now)],
+      unique_by: :index_authify_abuse_identity,
+      on_duplicate: Arel.sql(%("count" = "authify_abuse_buckets"."count" + 1, "updated_at" = EXCLUDED."updated_at" WHERE "authify_abuse_buckets"."count" < #{limit})),
+      returning: %w[id])
+    result.rows.any?
   end
 
   def self.source_requests(action:, source:, now:, window:)

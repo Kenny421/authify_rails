@@ -2,6 +2,12 @@
 
 ## 0.4.0 - Unreleased
 
+- Invalidate credentials after tenant transfers and recheck tenant boundaries
+  during session/API-token issuance; serialize revocation with passkey enrollment.
+- Reduce verification budgets from insert/lock/update cycles to one conditional
+  upsert; skip remote breach lookups for already-invalid passwords.
+- Add tenant-transfer, revoked-enrollment and single-statement budget regressions.
+
 - Bound browser/API credentials and pending MFA/passkey ceremonies to security
   versions; serialized sign-in completion with password reset and factor changes.
 - Added single-use database MFA challenges and atomic per-account verification

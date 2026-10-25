@@ -451,3 +451,73 @@ class AuthifyHardeningTest
     assert_empty @user.authify_passkeys
   end
 end
+
+class AuthifyHardeningTest
+  test "moving tenants permanently invalidates existing browser and API credentials" do
+    skip "Tenant schema not installed" unless @user.has_attribute?(:tenant_id)
+    @user.update_column(:tenant_id, 10)
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    session_record = @user.authify_sessions.last
+    bearer = AuthifyApiToken.issue!(user: @user, name: "Before transfer").last if defined?(AuthifyApiToken)
+    previous_version = @user.authify_security_version
+    @user.update!(tenant_id: 20)
+    assert_operator @user.authify_security_version, :>, previous_version
+    Authify.configuration.tenant_enabled = true
+    Authify.configuration.tenant_resolver = ->(_request) { 20 }
+    get account_sessions_path
+    assert_redirected_to new_session_path
+    assert session_record.reload.revoked_at
+    Current.authify_tenant_id = 20
+    assert_nil AuthifyApiToken.authenticate(bearer) if bearer
+  end
+
+  test "API token issuance cannot cross the active tenant boundary" do
+    skip "API or tenant schema not installed" unless defined?(AuthifyApiToken) && @user.has_attribute?(:tenant_id)
+    @user.update_column(:tenant_id, 20)
+    Authify.configuration.tenant_enabled = true
+    Current.authify_tenant_id = 10
+    assert_raises(Authify::StaleAuthentication) { AuthifyApiToken.issue!(user: @user, name: "Wrong tenant") }
+    assert_empty @user.authify_api_tokens
+  end
+
+  test "verification budgets use one atomic statement without extending rejected windows" do
+    key = SecureRandom.hex(32)
+    now = Time.at(Time.current.to_i / 300 * 300 + 60).utc
+    assert AuthifyAbuseBucket.consume_budget!(kind: "query_budget", key: key, now: now, limit: 2, window: 5.minutes)
+    [true, false].each do |expected|
+      queries = []
+      callback = ->(_name, _start, _finish, _id, payload) { queries << payload[:sql] unless payload[:name] == "SCHEMA" }
+      actual = nil
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
+        actual = AuthifyAbuseBucket.consume_budget!(kind: "query_budget", key: key, now: now + 1, limit: 2, window: 5.minutes)
+      end
+      assert_equal expected, actual
+      assert_equal 1, queries.length
+    end
+    row = AuthifyAbuseBucket.find_by!(kind: "query_budget", source_digest: key)
+    expiry = row.expires_at
+    refute AuthifyAbuseBucket.consume_budget!(kind: "query_budget", key: key, now: now + 2, limit: 2, window: 5.minutes)
+    assert_equal expiry, row.reload.expires_at
+    assert_equal 2, row.count
+  end
+
+  test "invalid passwords do not perform remote breach checks" do
+    original = Authify::PasswordBreachChecker.method(:new)
+    calls = 0
+    checker = Object.new
+    checker.define_singleton_method(:call) { Authify::PasswordBreachChecker::Result.new(false, 0, true) }
+    Authify::PasswordBreachChecker.define_singleton_method(:new) { |*| calls += 1; checker }
+    Authify.configuration.pwned_password_check = true
+    ["short", "x" * 129].each do |password|
+      user = Authify.configuration.user_class.new(email: "new@example.com", password: password)
+      refute user.valid?
+    end
+    assert_equal 0, calls
+    user = Authify.configuration.user_class.new(email: "new@example.com", password: "valid-password-123")
+    assert user.valid?
+    assert_equal 1, calls
+  ensure
+    Authify::PasswordBreachChecker.define_singleton_method(:new, original) if original
+    Authify.configuration.pwned_password_check = false
+  end
+end

@@ -114,6 +114,8 @@ module Authify
     # session or API token from an earlier version can never become valid again.
     def authify_serialize_security_change
       sensitive = %w[password_digest email email_verified_at disabled_at]
+      tenant_key = Authify.configuration.tenant_key.to_s
+      sensitive << tenant_key if has_attribute?(tenant_key)
       if sensitive.any? { |name| will_save_change_to_attribute?(name) }
         self.class.transaction do
           locked = self.class.lock.find(id)

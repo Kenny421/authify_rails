@@ -29,7 +29,7 @@ module Authify
         parsed
       end
       current_user.with_lock do
-        return reject_ceremony unless valid_ceremony_user?(ceremony, current_user) && ceremony["session_id"] == Current.authify_session.id
+        return reject_ceremony unless authify_current_session_valid? && valid_ceremony_user?(ceremony, current_user) && ceremony["session_id"] == Current.authify_session.id
         current_user.authify_passkeys.create!(credential_id: credential.id, public_key: credential.public_key, sign_count: credential.sign_count, name: params[:name].to_s.first(100).presence || "Passkey")
         current_user.authify_invalidate_credentials!
         authify_rotate_proven_session!("passkey_enrollment")
@@ -58,6 +58,7 @@ module Authify
       return_to = session[:authify_return_to]
       user.with_lock do
         return reject_ceremony unless valid_ceremony_user?(ceremony, user)
+        return reject_ceremony if reauth && !authify_current_session_valid?
         credential = parse_webauthn { WebAuthn::Credential.from_get(credential_params) }
         record = user.authify_passkeys.find_by(credential_id: credential.id)
         return reject_ceremony unless record

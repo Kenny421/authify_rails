@@ -13,16 +13,24 @@ module Authify
       redirect_to new_session_path, alert: "Your credentials changed. Please sign in again."
     end
 
+    # Called under the user lock for sensitive mutations. Reload revocation and
+    # expiry state after acquiring that lock, not just in the request before-action.
+    def authify_current_session_valid?
+      record = Current.authify_session
+      record && record.reload.active? && record.user_id == current_user.id &&
+        record.authify_security_version == current_user.authify_security_version && Authify.user_in_current_tenant?(current_user)
+    end
+
     def authify_recent_proof?
       record = Current.authify_session
       record && record.active? && record.reauthenticated_at && record.reauthenticated_at >= Authify.configuration.sudo_timeout.ago
     end
 
     def authify_sensitive_authentication(password: params[:current_password], code: params[:code], allow_recent: true)
-      return true if allow_recent && authify_recent_proof?
       verified = false
       current_user.with_lock do
-        raise Authify::StaleAuthentication unless Current.authify_session.reload.active? && Current.authify_session.authify_security_version == current_user.authify_security_version
+        raise Authify::StaleAuthentication unless authify_current_session_valid?
+        return true if allow_recent && authify_recent_proof?
         risk = Authify::AbuseProtection.new(source: request.remote_ip, account: current_user.email, tenant: Current.authify_tenant_id, action: :reauthenticate)
         return false unless risk.sensitive_attempt!
         credential = current_user.respond_to?(:authify_two_factor_credential) && current_user.authify_two_factor_credential
@@ -52,7 +60,7 @@ module Authify
       raw, digest = Authify::Token.generate
       expected_version = user.authify_security_version
       user.with_lock do
-        raise Authify::StaleAuthentication unless user.authify_security_version == expected_version
+        raise Authify::StaleAuthentication unless user.authify_security_version == expected_version && Authify.user_in_current_tenant?(user)
         risk = Authify::AbuseProtection.new(source: request.remote_ip, account: user.email, tenant: Current.authify_tenant_id)
         raise Authify::StaleAuthentication unless risk.factor_challenge_allowed?
         credential.reload

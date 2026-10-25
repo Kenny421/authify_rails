@@ -12,6 +12,7 @@ class AuthifySession < ApplicationRecord
   end
 
   def revoke!
-    update!(revoked_at: Time.current)
+    # Serialize explicit revocation with enrollment and session rotation.
+    user.with_lock { update!(revoked_at: Time.current) }
   end
 end

@@ -114,3 +114,84 @@ class AuthifyConcurrencyTest < ActionDispatch::IntegrationTest
   end
 
 end
+
+class AuthifyConcurrencyTest
+  test "a tenant transfer between password verification and session creation is rejected" do
+    skip "Tenant schema not installed" unless @user.has_attribute?(:tenant_id)
+    @user.update_column(:tenant_id, 10)
+    Authify.configuration.tenant_enabled = true
+    Authify.configuration.tenant_resolver = ->(_request) { 10 }
+    barrier = Module.new do
+      def authenticate(password)
+        result = super
+        if (queues = Thread.current[:authify_tenant_barrier])
+          queues.first << true
+          queues.last.pop
+        end
+        result
+      end
+    end
+    Authify.configuration.user_class.prepend(barrier)
+    ready, release = Queue.new, Queue.new
+    login = Thread.new do
+      Thread.current[:authify_tenant_barrier] = [ready, release]
+      client = ActionDispatch::Integration::Session.new(Rails.application)
+      client.post "/sign-in", params: { email: @user.email, password: "correct-password-123" }
+      client.response.status
+    ensure
+      Thread.current[:authify_tenant_barrier] = nil
+    end
+    require "timeout"
+    Timeout.timeout(15) { ready.pop }
+    # Also protect against external tenant moves that bypass model callbacks.
+    @user.update_column(:tenant_id, 20)
+    release << true
+    assert_equal 302, login.value
+    assert_empty @user.authify_sessions
+  ensure
+    release << true if release
+    login&.join(5)
+    Authify.configuration.tenant_enabled = false
+  end
+
+  test "revoking a session during passkey enrollment prevents registration" do
+    skip "Passkeys not installed" unless defined?(AuthifyPasskey)
+    require "webauthn/fake_client"
+    post session_path, params: { email: @user.email, password: "correct-password-123" }
+    post registration_options_passkeys_path, params: { current_password: "correct-password-123" }, as: :json
+    assert_response :success
+    existing_session = @user.authify_sessions.last
+    credential = WebAuthn::FakeClient.new("http://localhost:3000").create(challenge: response.parsed_body.fetch("challenge"), user_verified: true)
+    captured = cookies.instance_variable_get(:@cookies).to_h { |cookie| [cookie.name, cookie.value] }
+    barrier = Module.new do
+      def verify(...)
+        result = super
+        if (queues = Thread.current[:authify_enrollment_barrier])
+          queues.first << true
+          queues.last.pop
+        end
+        result
+      end
+    end
+    WebAuthn::PublicKeyCredentialWithAttestation.prepend(barrier)
+    ready, release = Queue.new, Queue.new
+    registration = Thread.new do
+      Thread.current[:authify_enrollment_barrier] = [ready, release]
+      client = ActionDispatch::Integration::Session.new(Rails.application)
+      captured.each { |key, value| client.cookies[key] = value }
+      client.post "/passkeys", params: { credential: credential }, as: :json
+      client.response.status
+    ensure
+      Thread.current[:authify_enrollment_barrier] = nil
+    end
+    require "timeout"
+    Timeout.timeout(15) { ready.pop }
+    existing_session.revoke!
+    release << true
+    assert_equal 422, registration.value
+    assert_empty @user.authify_passkeys
+  ensure
+    release << true if release
+    registration&.join(5)
+  end
+end

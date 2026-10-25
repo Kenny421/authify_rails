@@ -5,7 +5,7 @@ class AuthifyApiToken < ApplicationRecord
     raw, digest = Authify::Token.generate
     version = user.authify_security_version
     token = user.with_lock do
-      raise Authify::StaleAuthentication unless user.authify_security_version == version && user.disabled_at.nil?
+      raise Authify::StaleAuthentication unless user.authify_security_version == version && user.disabled_at.nil? && Authify.user_in_current_tenant?(user)
       create!(authify_security_version: version, user: user, name: name, scopes: scopes, expires_at: expires_at, token_prefix: raw.first(10), token_digest: digest)
     end
     [token, "authify_live_#{raw}"]

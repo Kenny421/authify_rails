@@ -11,6 +11,10 @@ module Authify
     id
   end
 
+  def self.user_in_current_tenant?(user)
+    !configuration.tenant_enabled || user_scope.where(id: user.id).exists?
+  end
+
   def self.user_scope
     scope = configuration.user_class.all
     return scope unless configuration.tenant_enabled

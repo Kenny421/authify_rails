@@ -136,3 +136,19 @@ application-file write fails, already-applied application-file writes are rolled
 back where the filesystem allows it; rollback failures identify the paths to
 restore from git. This is not a filesystem/database transaction. Keep the pre-upgrade
 commit and backup, and inspect the diff after any interrupted or failed generation.
+
+### Tenant-transfer and verification-budget follow-up
+
+Tenant-key updates through `update!` now invalidate existing credentials, including
+when tenant enforcement is temporarily disabled. Transferred accounts must sign
+in again and recreate API tokens in their destination tenant. Session/token
+issuance also checks the current tenant while holding the user lock, including
+moves made by external database writers. Bulk updates still bypass version
+callbacks; custom tenant-transfer code should invalidate credentials explicitly.
+
+Session revocation now takes the same user lock as sensitive enrollment. A revoked
+session cannot complete an in-flight passkey enrollment or identity confirmation.
+Verification-budget consumption uses one conditional database upsert, preserving
+fixed-window expiry and concurrency guarantees without failed insert/savepoint
+cycles. Invalid passwords are rejected locally before breach-check network calls.
+No additional schema migration is needed beyond `HardenAuthifyCredentials`.
