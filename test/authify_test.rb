@@ -51,6 +51,20 @@ class AuthifyTest < Minitest::Test
     end
   end
 
+  def test_invalid_installation_manifest_fails_closed_without_overwriting_it
+    Dir.mktmpdir do |root|
+      FileUtils.mkdir_p(File.join(root, "config"))
+      manifest_path = File.join(root, "config/authify.yml")
+      ["features: [core]", "features: [unclosed"].each do |invalid_manifest|
+        File.write(manifest_path, invalid_manifest)
+        assert_raises(Authify::InstallationManifest::InvalidManifest) do
+          Authify::InstallationManifest.new(root: root)
+        end
+        assert_equal invalid_manifest, File.read(manifest_path)
+      end
+    end
+  end
+
   def test_upgrade_migration_is_additive_and_idempotent
     content = read_template("lib/generators/authify/upgrade/templates/compatibility_migration.rb.tt")
 
