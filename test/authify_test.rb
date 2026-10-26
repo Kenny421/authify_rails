@@ -84,6 +84,19 @@ class AuthifyTest < Minitest::Test
     assert_includes challenge, 'event_type: "sign_in_failed_2fa"'
   end
 
+  def test_failed_login_updates_are_serialized_across_concurrent_requests
+    concern = read_template("lib/generators/authify/internal/core/templates/concerns/authenticatable.rb.tt")
+
+    # Database row locks prevent two simultaneous requests from losing
+    # increments and exceeding the configured password/2FA guess budget.
+    assert_includes concern, "def record_failed_login!"
+    assert_includes concern, "with_lock do"
+    assert_includes concern, "return if locked?"
+    assert_includes concern, "update_columns(attrs)"
+    assert_includes concern, "def clear_failed_logins!"
+    refute_includes concern, "update_columns(**attrs, updated_at: Time.current)"
+  end
+
   def test_unverified_users_cannot_start_or_resume_a_session
     sessions = read_template("lib/generators/authify/internal/core/templates/controllers/sessions_controller.rb.tt")
     current_session = read_template("lib/generators/authify/internal/core/templates/current_session.rb.tt")
