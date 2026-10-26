@@ -33,7 +33,7 @@ jobs:
       - run: gem install bundler-audit
       - name: Refresh locked gems for the security audit
         run: |
-          bundle update
+          BUNDLE_FROZEN=false bundle update
           echo "BEGIN_UPDATED_GEMFILE_LOCK"
           base64 -w 0 Gemfile.lock
           echo
