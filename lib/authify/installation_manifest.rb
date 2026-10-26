@@ -1,11 +1,16 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "tempfile"
 require "yaml"
 
 module Authify
   class InstallationManifest
     DEFAULT_PATH = "config/authify.yml"
+
+    # An unreadable manifest must never be mistaken for a fresh installation:
+    # the installer could otherwise regenerate already-customized components.
+    class InvalidManifest < StandardError; end
 
     attr_reader :path
 
@@ -41,14 +46,27 @@ module Authify
     def load_data
       return {} unless File.exist?(path)
 
-      YAML.safe_load_file(path, permitted_classes: [], aliases: false) || {}
-    rescue Psych::SyntaxError
-      {}
+      data = YAML.safe_load_file(path, permitted_classes: [], aliases: false)
+      return {} if data.nil?
+      unless data.is_a?(Hash) && (data["features"].nil? || data["features"].is_a?(Hash))
+        raise InvalidManifest, "Authify installation manifest at #{path} must be a mapping with a features mapping."
+      end
+
+      data
+    rescue Psych::Exception => e
+      raise InvalidManifest, "Cannot safely read Authify installation manifest at #{path}: #{e.class}"
     end
 
     def write!
       FileUtils.mkdir_p(File.dirname(path))
-      File.write(path, YAML.dump(@data))
+      # Write and rename in the same directory so interrupted upgrades cannot
+      # leave a partially written manifest behind.
+      Tempfile.create([".authify-manifest-", ".yml"], File.dirname(path)) do |temp|
+        temp.write(YAML.dump(@data))
+        temp.flush
+        temp.fsync
+        File.rename(temp.path, path)
+      end
     end
   end
 end
