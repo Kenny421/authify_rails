@@ -55,7 +55,7 @@ jobs:
           --health-retries 5
     env:
       AUTHIFY_GEM_PATH: ${{ github.workspace }}
-      DATABASE_URL: ${{ matrix.database == 'postgresql' && 'postgres://postgres:postgres@localhost:5432/authify_test' || '' }}
+      DATABASE_URL: ${{ matrix.database == 'postgresql' && 'postgres://postgres:postgres@localhost:5432/authify_test' || 'sqlite3:/tmp/authify_app/storage/test.sqlite3' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
