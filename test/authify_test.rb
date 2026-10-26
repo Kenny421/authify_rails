@@ -51,6 +51,20 @@ class AuthifyTest < Minitest::Test
     end
   end
 
+  def test_invalid_installation_manifest_fails_closed_without_overwriting_it
+    Dir.mktmpdir do |root|
+      FileUtils.mkdir_p(File.join(root, "config"))
+      manifest_path = File.join(root, "config/authify.yml")
+      ["features: [core]", "features: [unclosed"].each do |invalid_manifest|
+        File.write(manifest_path, invalid_manifest)
+        assert_raises(Authify::InstallationManifest::InvalidManifest) do
+          Authify::InstallationManifest.new(root: root)
+        end
+        assert_equal invalid_manifest, File.read(manifest_path)
+      end
+    end
+  end
+
   def test_upgrade_migration_is_additive_and_idempotent
     content = read_template("lib/generators/authify/upgrade/templates/compatibility_migration.rb.tt")
 
@@ -82,6 +96,19 @@ class AuthifyTest < Minitest::Test
     assert_includes challenge, "CHALLENGE_TTL = 5.minutes"
     assert_includes challenge, "verify?(params[:code])"
     assert_includes challenge, 'event_type: "sign_in_failed_2fa"'
+  end
+
+  def test_failed_login_updates_are_serialized_across_concurrent_requests
+    concern = read_template("lib/generators/authify/internal/core/templates/concerns/authenticatable.rb.tt")
+
+    # Database row locks prevent two simultaneous requests from losing
+    # increments and exceeding the configured password/2FA guess budget.
+    assert_includes concern, "def record_failed_login!"
+    assert_includes concern, "with_lock do"
+    assert_includes concern, "return if locked?"
+    assert_includes concern, "update_columns(attrs)"
+    assert_includes concern, "def clear_failed_logins!"
+    refute_includes concern, "update_columns(**attrs, updated_at: Time.current)"
   end
 
   def test_unverified_users_cannot_start_or_resume_a_session

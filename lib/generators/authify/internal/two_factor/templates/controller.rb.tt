@@ -1,3 +1,5 @@
+require "base64"
+
 module Authify
   class TwoFactorController < ApplicationController
     require_authentication
@@ -12,7 +14,9 @@ module Authify
       @credential ||= AuthifyTwoFactorCredential.build_for(current_user)
       session[:authify_pending_totp_secret] = @credential.secret_ciphertext
       @provisioning_uri = ROTP::TOTP.new(@credential.secret_ciphertext, issuer: Rails.application.class.module_parent_name).provisioning_uri(current_user.email)
-      @qr_svg = RQRCode::QRCode.new(@provisioning_uri).as_svg(module_size: 4).html_safe
+      # SVG stays out of the HTML DOM and never needs html_safe.
+      svg = RQRCode::QRCode.new(@provisioning_uri).as_svg(module_size: 4)
+      @qr_data_uri = "data:image/svg+xml;base64,#{Base64.strict_encode64(svg)}"
     end
 
     def create

@@ -22,7 +22,8 @@ module Authify
     def authify_require_sudo(freshness: nil)
       return if authify_sudo_valid?(freshness: freshness)
 
-      session[:authify_sudo_return_to] = request.fullpath if request.get?
+      # Only actual GET navigation should set the sudo return destination.
+      session[:authify_sudo_return_to] = request.fullpath if request.request_method == "GET"
       redirect_to new_sudo_path, alert: "Confirm your identity to continue."
     end
 

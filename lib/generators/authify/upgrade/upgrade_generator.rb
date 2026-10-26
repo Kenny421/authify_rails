@@ -30,6 +30,14 @@ module Authify
       def create_compatibility_migration
         return unless manifest.feature?(:core)
 
+        # Re-running an upgrade must never overwrite a migration an application
+        # has already reviewed or applied to production.
+        existing = Dir.glob(File.join(destination_root, "db/migrate/*_upgrade_authify_security_fields.rb"))
+        if existing.any?
+          say "Authify security migration already exists; leaving it unchanged.", :green
+          return
+        end
+
         migration_template "compatibility_migration.rb.tt", "db/migrate/upgrade_authify_security_fields.rb"
       end
 

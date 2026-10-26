@@ -195,6 +195,11 @@ class GeneratorIntegrationTest < Minitest::Test
     assert_includes migration, "user_table = :users"
     assert_includes migration, "column_exists?(:authify_sessions, :authentication_method)"
     assert RubyVM::InstructionSequence.compile(migration)
+
+    # Repeating the upgrade should never generate a duplicate migration.
+    run_generator(Authify::Generators::UpgradeGenerator)
+    assert_equal 1, Dir[File.join(@tmpdir, "db/migrate/*_upgrade_authify_security_fields.rb")].length
+    assert_equal migration, File.read(migration_path)
   end
 
   private

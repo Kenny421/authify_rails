@@ -8,10 +8,18 @@ class AuthifyOauthSecurityTest < ActionDispatch::IntegrationTest
     AuthenticationEvent.delete_all
     AuthifySession.delete_all
     Authify.configuration.user_class.delete_all
+    @prior_oauth_test_mode = OmniAuth.config.test_mode
+    OmniAuth.config.test_mode = true
+  end
+
+  teardown do
+    OmniAuth.config.mock_auth.delete(:google_oauth2)
+    OmniAuth.config.test_mode = @prior_oauth_test_mode
   end
 
   test "verified provider email creates an identity and session" do
-    post "/auth/google_oauth2/callback", env: { "omniauth.auth" => auth_hash }
+    OmniAuth.config.mock_auth[:google_oauth2] = auth_hash
+    get "/auth/google_oauth2/callback"
 
     assert_redirected_to Authify.configuration.after_sign_in_path
     identity = AuthifyOauthIdentity.find_by!(provider: "google_oauth2", uid: "provider-user-123")
@@ -20,8 +28,8 @@ class AuthifyOauthSecurityTest < ActionDispatch::IntegrationTest
   end
 
   test "unverified provider email is rejected" do
-    post "/auth/google_oauth2/callback",
-         env: { "omniauth.auth" => auth_hash(email_verified: false, uid: "unverified-123") }
+    OmniAuth.config.mock_auth[:google_oauth2] = auth_hash(email_verified: false, uid: "unverified-123")
+    get "/auth/google_oauth2/callback"
 
     assert_redirected_to new_session_path
     assert_equal 0, AuthifyOauthIdentity.count

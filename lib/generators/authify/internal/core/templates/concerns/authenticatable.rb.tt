@@ -22,17 +22,27 @@ module Authify
       locked_until.present? && locked_until.future?
     end
 
+    # Serialize concurrent password and second-factor failures for this account.
+    # Without the row lock, two requests can read the same counter and lose an
+    # increment, allowing an attacker more guesses than the configured limit.
     def record_failed_login!
-      next_count = failed_login_attempts.to_i + 1
-      attrs = { failed_login_attempts: next_count }
-      if next_count >= Authify.configuration.maximum_login_attempts
-        attrs[:locked_until] = Authify.configuration.lockout_duration.from_now
+      with_lock do
+        return if locked?
+
+        next_count = failed_login_attempts.to_i + 1
+        attrs = { failed_login_attempts: next_count, updated_at: Time.current }
+        if next_count >= Authify.configuration.maximum_login_attempts
+          attrs[:locked_until] = Authify.configuration.lockout_duration.from_now
+        end
+        update_columns(attrs)
       end
-      update_columns(**attrs, updated_at: Time.current)
     end
 
+    # A successful completed sign-in must not race with a failed login update.
     def clear_failed_logins!
-      update_columns(failed_login_attempts: 0, locked_until: nil, updated_at: Time.current)
+      with_lock do
+        update_columns(failed_login_attempts: 0, locked_until: nil, updated_at: Time.current)
+      end
     end
 
     def issue_password_reset!
