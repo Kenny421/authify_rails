@@ -31,7 +31,8 @@ module Authify
 
     def authify_require_authentication
       return if authenticated?
-      session[:authify_return_to] = request.fullpath if request.get?
+      # HEAD is routed like GET but must not set a navigation return URL.
+      session[:authify_return_to] = request.fullpath if request.request_method == "GET"
       redirect_to new_session_path, alert: "Please sign in to continue."
     end
   end
